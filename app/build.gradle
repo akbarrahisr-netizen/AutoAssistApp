@@ -1,6 +1,6 @@
 plugins {
-    id 'com.android.application' version '8.2.2'
-    id 'org.jetbrains.kotlin.android' version '1.9.22'
+    id 'com.android.application'
+    id 'kotlin-android'
 }
 
 android {
@@ -14,7 +14,6 @@ android {
         versionCode 1
         versionName "1.0"
         
-        // यहाँ हमने डमी चाबी डाल दी है ताकि मशीन अटके नहीं
         buildConfigField "String", "API_KEY", "\"MyDummyKey123\""
     }
 
