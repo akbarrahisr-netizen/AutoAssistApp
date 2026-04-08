@@ -38,9 +38,6 @@ android {
 }
 
 dependencies {
-    // यहाँ हमने वर्ज़न बढ़ा दिए हैं ताकि पुराना कचरा साफ़ हो जाए
-    implementation 'androidx.core:core-ktx:1.13.0'
-    implementation 'androidx.appcompat:appcompat:1.6.1'
-    implementation 'com.google.android.material:material:1.11.0'
-    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.4'
+    implementation 'androidx.core:core-ktx:1.12.0'
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
 }
