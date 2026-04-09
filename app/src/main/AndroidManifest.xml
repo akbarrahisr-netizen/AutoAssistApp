@@ -6,12 +6,11 @@
         android:label="AutoAssist"
         android:supportsRtl="true"
         android:theme="@android:style/Theme.NoTitleBar">
-
-        <service
-            android:name=".AssistiveFormService"
-            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
-            android:exported="true">
-            
+<service
+    android:name=".FormAssistService"
+    android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+      android:exported="true">
+    
             <intent-filter>
                 <action android:name="android.accessibilityservice.AccessibilityService"/>
             </intent-filter>
