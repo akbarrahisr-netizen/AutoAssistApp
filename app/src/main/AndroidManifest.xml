@@ -22,3 +22,25 @@
 
     </application>
 </manifest>
+<application
+    android:allowBackup="true"
+    android:label="AutoAssist"
+    android:supportsRtl="true"
+    android:theme="@android:style/Theme.NoTitleBar">
+
+    <activity
+        android:name=".MainActivity"
+        android:exported="true">
+        <intent-filter>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent-filter>
+    </activity>
+    <service
+        android:name=".MyAccessibilityService"
+        android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+        android:exported="true">
+        ... (बाकी सर्विस का कोड) ...
+    </service>
+
+</application>
