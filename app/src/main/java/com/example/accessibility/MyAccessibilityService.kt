@@ -25,7 +25,7 @@ class MyAccessibilityService : AccessibilityService() {
 
                 if (now == target && lastT != now) {
                     val root = rootInActiveWindow
-                    click(root, "Refresh") ?: click(root, "Updated")
+                    if (!click(root, "Refresh")) click(root, "Updated")
                     lastT = now
                 }
                 handler.postDelayed(this, 100)
@@ -51,7 +51,7 @@ class MyAccessibilityService : AccessibilityService() {
             root.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
         }
 
-        // 2. पैसेंजर भरना
+        // 2. पैसेंजर फॉर्म भरना (No Delay)
         click(root, "OK")
         val edits = mutableListOf<AccessibilityNodeInfo>()
         getEdits(root, edits)
@@ -61,6 +61,7 @@ class MyAccessibilityService : AccessibilityService() {
             val n = prefs.getString("n$pIdx", "") ?: ""
             val a = prefs.getString("a$pIdx", "") ?: ""
             val g = if (prefs.getString("g$pIdx", "M")?.uppercase() == "F") "Female" else "Male"
+            
             if (n.isNotEmpty()) {
                 val b1 = Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, n) }
                 edits[0].performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, b1)
@@ -88,11 +89,17 @@ class MyAccessibilityService : AccessibilityService() {
         return ns.isNotEmpty()
     }
 
-    private fun find(r: AccessibilityNodeInfo, t: String) = r.findAccessibilityNodeInfosByText(t).firstOrNull()
+    // यहाँ सुधार किया गया है: AccessibilityNodeInfo? (Nullable) का ध्यान रखा गया है
+    private fun find(r: AccessibilityNodeInfo?, t: String): AccessibilityNodeInfo? {
+        return r?.findAccessibilityNodeInfosByText(t)?.firstOrNull()
+    }
 
     private fun findCard(n: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-        var p = n
-        while (p.parent != null) { p = p.parent; if (p.findAccessibilityNodeInfosByText("Refresh").isNotEmpty()) return p }
+        var p: AccessibilityNodeInfo? = n
+        while (p?.parent != null) { 
+            p = p.parent 
+            if (p?.findAccessibilityNodeInfosByText("Refresh")?.isNotEmpty() == true || p?.findAccessibilityNodeInfosByText("Updated")?.isNotEmpty() == true) return p 
+        }
         return null
     }
 
