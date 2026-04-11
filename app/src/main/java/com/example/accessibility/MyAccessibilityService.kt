@@ -25,8 +25,11 @@ class MyAccessibilityService : AccessibilityService() {
 
                 if (now == target && lastT != now) {
                     val root = rootInActiveWindow
-                    if (!click(root, "Refresh")) click(root, "Updated")
-                    lastT = now
+                    // --- फेसबुक लॉक: सिर्फ IRCTC होने पर ही रिफ्रेश दबाओ ---
+                    if (root?.packageName?.toString()?.contains("irctc") == true) {
+                        if (!click(root, "Refresh")) click(root, "Updated")
+                        lastT = now
+                    }
                 }
                 handler.postDelayed(this, 100)
             }
@@ -35,6 +38,11 @@ class MyAccessibilityService : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         val root = rootInActiveWindow ?: return
+        val pkg = root.packageName?.toString() ?: ""
+        
+        // --- सख्त लॉक: अगर IRCTC नहीं है, तो वापस जाओ ---
+        if (!pkg.contains("irctc")) return
+
         val prefs = getSharedPreferences("AutoData", Context.MODE_PRIVATE)
         val tNum = prefs.getString("t_num", "") ?: ""
         val cls = prefs.getString("sel_cls", "SL") ?: "SL"
@@ -51,7 +59,7 @@ class MyAccessibilityService : AccessibilityService() {
             root.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
         }
 
-        // 2. पैसेंजर फॉर्म भरना (No Delay)
+        // 2. पैसेंजर फॉर्म भरना (बिना किसी डिले के)
         click(root, "OK")
         val edits = mutableListOf<AccessibilityNodeInfo>()
         getEdits(root, edits)
@@ -89,7 +97,6 @@ class MyAccessibilityService : AccessibilityService() {
         return ns.isNotEmpty()
     }
 
-    // यहाँ सुधार किया गया है: AccessibilityNodeInfo? (Nullable) का ध्यान रखा गया है
     private fun find(r: AccessibilityNodeInfo?, t: String): AccessibilityNodeInfo? {
         return r?.findAccessibilityNodeInfosByText(t)?.firstOrNull()
     }
@@ -105,4 +112,3 @@ class MyAccessibilityService : AccessibilityService() {
 
     override fun onInterrupt() {}
 }
-
