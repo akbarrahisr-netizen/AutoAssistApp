@@ -13,24 +13,34 @@ class MyAccessibilityService : AccessibilityService() {
 
     private var currentIdx = 1
     private val handler = Handler(Looper.getMainLooper())
-    private var isTriggered = false
+    private var lastRefreshTime = ""
 
     override fun onServiceConnected() {
         super.onServiceConnected()
-        // बैकग्राउंड में घड़ी चालू करें
+        // बैकग्राउंड टाइमर (हर 200ms पर चेक करेगा)
         handler.postDelayed(object : Runnable {
             override fun run() {
                 val prefs = getSharedPreferences("PassengerData", Context.MODE_PRIVATE)
                 val target = prefs.getString("t_time", "10:59:58") ?: "10:59:58"
-                val now = String.format("%02d:%02d:%02d", Calendar.getInstance().get(Calendar.HOUR_OF_DAY), Calendar.getInstance().get(Calendar.MINUTE), Calendar.getInstance().get(Calendar.SECOND))
+                
+                val now = String.format("%02d:%02d:%02d", 
+                    Calendar.getInstance().get(Calendar.HOUR_OF_DAY), 
+                    Calendar.getInstance().get(Calendar.MINUTE), 
+                    Calendar.getInstance().get(Calendar.SECOND))
 
-                if (now == target && !isTriggered) {
-                    clickByText(rootInActiveWindow, "Refresh")
-                    isTriggered = true
+                if (now == target && lastRefreshTime != now) {
+                    val root = rootInActiveWindow
+                    if (root != null) {
+                        // 1. "Refresh" शब्द ढूँढो या फिर नीचे वाले "Updated" वाले आइकन को दबाओ
+                        if (!clickByText(root, "Refresh")) {
+                            clickByText(root, "Updated") // इस फोटो वाले बटन के लिए
+                        }
+                        lastRefreshTime = now
+                    }
                 }
-                handler.postDelayed(this, 500)
+                handler.postDelayed(this, 200)
             }
-        }, 500)
+        }, 200)
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -41,38 +51,66 @@ class MyAccessibilityService : AccessibilityService() {
         val prefs = getSharedPreferences("PassengerData", Context.MODE_PRIVATE)
         val delay = prefs.getString("c_delay", "200")?.toLong() ?: 200L
 
-        // 1. चुनी हुई क्लास (3A, SL आदि) पर क्लिक करें
+        // 1. आपकी क्लास (SL, 3A आदि) को मज़बूती से क्लिक करना
         val selCls = prefs.getString("sel_cls", "SL") ?: "SL"
         clickByText(root, selCls)
 
-        // 2. अगर हरा "AVL" दिखा, तो सीधे पैसेंजर डिटेल्स पर जाएँ
+        // 2. सीट चेक (AVL देखते ही आगे बढ़ना)
         if (findNode(root, "AVL") != null || findNode(root, "AVAILABLE") != null) {
             clickByText(root, "PASSENGER DETAILS")
         }
 
-        // 3. पैसेंजर फॉर्म भरना
-        clickByText(root, "OK") // पॉप-अप हटाएँ
+        // 3. बीच के पॉप-अप हटाना
+        clickByText(root, "OK")
+
+        // 4. फॉर्म भरने का काम
+        fillForm(root, prefs, delay)
+    }
+
+    private fun fillForm(root: AccessibilityNodeInfo, prefs: android.content.SharedPreferences, delay: Long) {
         val edits = mutableListOf<AccessibilityNodeInfo>()
         findFields(root, edits)
-
         val total = (1..6).count { !prefs.getString("n$it", "").isNullOrEmpty() }
 
         if (edits.size >= 2 && edits[0].text.isNullOrEmpty()) {
             val name = prefs.getString("n$currentIdx", "") ?: ""
             val age = prefs.getString("a$currentIdx", "") ?: ""
-            val gender = if (prefs.getString("g$currentIdx", "M") == "F") "Female" else "Male"
+            val gender = if (prefs.getString("g$currentIdx", "M")?.uppercase() == "F") "Female" else "Male"
 
             if (name.isNotEmpty()) {
                 input(edits[0], name)
                 input(edits[1], age)
                 clickByText(root, gender)
-                handler.postDelayed({ clickByText(root, "Add Passenger"); currentIdx++ }, delay)
+                handler.postDelayed({ 
+                    clickByText(root, "Add Passenger")
+                    currentIdx++ 
+                }, delay)
             }
         } else if (currentIdx > total && total > 0) {
-            handler.postDelayed({ clickByText(root, "REVIEW JOURNEY DETAILS") }, delay)
+            clickByText(root, "REVIEW JOURNEY DETAILS")
         } else {
             clickByText(root, "+ Add New")
         }
+    }
+
+    // --- क्लिक करने का सबसे ताक़तवर तरीका ---
+    private fun clickByText(root: AccessibilityNodeInfo?, text: String): Boolean {
+        var clicked = false
+        root?.findAccessibilityNodeInfosByText(text)?.forEach { node ->
+            // खुद बटन को दबाओ
+            if (node.isClickable) {
+                node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                clicked = true
+            }
+            // अगर बटन नहीं दबा, तो उसके 'पिता' (Parent) को दबाओ (डिब्बे को क्लिक करने के लिए)
+            node.parent?.let { 
+                if (it.isClickable) {
+                    it.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    clicked = true
+                }
+            }
+        }
+        return clicked
     }
 
     private fun findFields(n: AccessibilityNodeInfo, l: MutableList<AccessibilityNodeInfo>) {
@@ -85,17 +123,11 @@ class MyAccessibilityService : AccessibilityService() {
         n.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, b)
     }
 
-    private fun clickByText(r: AccessibilityNodeInfo?, t: String) {
-        r?.findAccessibilityNodeInfosByText(t)?.forEach {
-            if (it.isClickable) it.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-            else it.parent?.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-        }
-    }
-
     private fun findNode(r: AccessibilityNodeInfo, t: String): AccessibilityNodeInfo? {
-        val n = r.findAccessibilityNodeInfosByText(t)
-        return if (n.isNotEmpty()) n[0] else null
+        val nodes = r.findAccessibilityNodeInfosByText(t)
+        return if (nodes.isNotEmpty()) nodes[0] else null
     }
 
     override fun onInterrupt() {}
 }
+
