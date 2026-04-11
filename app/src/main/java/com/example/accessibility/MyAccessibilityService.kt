@@ -66,3 +66,4 @@ class MyAccessibilityService : AccessibilityService() {
 
     override fun onInterrupt() {}
 }
+ 
