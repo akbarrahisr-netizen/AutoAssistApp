@@ -3,30 +3,67 @@ package com.example.accessibility
 import android.accessibilityservice.AccessibilityService
 import android.content.Context
 import android.os.Bundle
-import android.view.accessibility.AccessibilityEvent
-import android.view.accessibility.AccessibilityNodeInfo
 import android.os.Handler
 import android.os.Looper
+import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityNodeInfo
+import java.util.Calendar
 
 class MyAccessibilityService : AccessibilityService() {
 
     private var currentPassengerIndex = 1
     private val handler = Handler(Looper.getMainLooper())
+    private var isTimeTriggered = false
+
+    override fun onServiceConnected() {
+        super.onServiceConnected()
+        startClock()
+    }
+
+    private fun startClock() {
+        handler.postDelayed(object : Runnable {
+            override fun run() {
+                val prefs = getSharedPreferences("PassengerData", Context.MODE_PRIVATE)
+                val target = prefs.getString("target_time", "10:59:58") ?: "10:59:58"
+                
+                val cal = Calendar.getInstance()
+                val now = String.format("%02d:%02d:%02d", cal.get(Calendar.HOUR_OF_DAY), cal.get(Calendar.MINUTE), cal.get(Calendar.SECOND))
+
+                if (now == target && !isTimeTriggered) {
+                    clickByText(rootInActiveWindow, "Refresh")
+                    isTimeTriggered = true
+                }
+                handler.postDelayed(this, 1000)
+            }
+        }, 1000)
+    }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        val packageName = event?.packageName?.toString() ?: ""
+        if (!packageName.contains("irctc")) return
+
         val rootNode = rootInActiveWindow ?: return
         val prefs = getSharedPreferences("PassengerData", Context.MODE_PRIVATE)
 
-        // 1. कुल पैसेंजर की गिनती (1 से 6)
-        val totalToFill = getTotalNamesFilled(prefs)
-        if (totalToFill == 0) return
+        // --- 'अवेलेबल' (AVL) चेक ---
+        if (prefs.getBoolean("check_avl", true)) {
+            val avlNodes = rootNode.findAccessibilityNodeInfosByText("AVL")
+            val availableNodes = rootNode.findAccessibilityNodeInfosByText("AVAILABLE")
+            
+            if (avlNodes.isNotEmpty() || availableNodes.isNotEmpty()) {
+                clickByText(rootNode, "PASSENGER DETAILS")
+            }
+        }
 
-        // 2. हर बार चेक करो - अगर 'OK' पॉप-अप दिखे तो तुरंत हटाओ (रुको मत)
-        clickByText(rootNode, "OK")
+        // पैसेंजर फॉर्म भरने वाला पुराना लॉजिक यहाँ काम करता रहेगा
+        processPassengerForms(rootNode, prefs)
+    }
 
-        // 3. चेक करो - क्या हम 'Add Passenger' (फॉर्म) वाले पेज पर हैं?
+    private fun processPassengerForms(rootNode: AccessibilityNodeInfo, prefs: android.content.SharedPreferences) {
         val editTexts = mutableListOf<AccessibilityNodeInfo>()
         findFields(rootNode, editTexts)
+        
+        val total = (1..6).count { !prefs.getString("n$it", "").isNullOrEmpty() }
 
         if (editTexts.size >= 2 && editTexts[0].text.isNullOrEmpty()) {
             val name = prefs.getString("n$currentPassengerIndex", "") ?: ""
@@ -37,46 +74,19 @@ class MyAccessibilityService : AccessibilityService() {
                 inputText(editTexts[0], name)
                 inputText(editTexts[1], age)
                 clickByText(rootNode, if (gender.uppercase() == "F") "Female" else "Male")
-
-                handler.postDelayed({
-                    clickByText(rootNode, "Add Passenger")
-                    currentPassengerIndex++
-                }, 100) // और भी तेज़ (100ms)
+                handler.postDelayed({ clickByText(rootNode, "Add Passenger"); currentPassengerIndex++ }, 150)
             }
-            return
-        }
-
-        // 4. अगर पैसेंजर पूरे हो गए हैं, तो "REVIEW" बटन दबाओ
-        // अगर 'Add New' नहीं भी दिखा, तब भी यह बटन दबाने की कोशिश करेगा
-        if (currentPassengerIndex > totalToFill) {
+        } else if (currentPassengerIndex > total && total > 0) {
             clickByText(rootNode, "REVIEW JOURNEY DETAILS")
-            // काम पूरा होने के बाद काउंटर रिसेट
-            if (findNodeByText(rootNode, "Select Payment Method") != null) {
-                currentPassengerIndex = 1
-            }
-            return
-        }
-
-        // 5. अगर और पैसेंजर बाकी हैं, तो "+ Add New" ढूँढो और दबाओ
-        if (currentPassengerIndex <= totalToFill) {
+        } else {
+            clickByText(rootNode, "OK")
             clickByText(rootNode, "+ Add New")
         }
     }
 
-    private fun getTotalNamesFilled(prefs: android.content.SharedPreferences): Int {
-        var count = 0
-        for (i in 1..6) {
-            if (!prefs.getString("n$i", "").isNullOrEmpty()) count = i
-        }
-        return count
-    }
-
     private fun findFields(node: AccessibilityNodeInfo, list: MutableList<AccessibilityNodeInfo>) {
         if (node.className == "android.widget.EditText") list.add(node)
-        for (i in 0 until node.childCount) {
-            val child = node.getChild(i)
-            if (child != null) findFields(child, list)
-        }
+        for (i in 0 until node.childCount) node.getChild(i)?.let { findFields(it, list) }
     }
 
     private fun inputText(node: AccessibilityNodeInfo, text: String) {
@@ -84,17 +94,11 @@ class MyAccessibilityService : AccessibilityService() {
         node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
     }
 
-    private fun clickByText(rootNode: AccessibilityNodeInfo, text: String) {
-        val nodes = rootNode.findAccessibilityNodeInfosByText(text)
-        for (node in nodes) {
-            if (node.isClickable) node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-            else node.parent?.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+    private fun clickByText(rootNode: AccessibilityNodeInfo?, text: String) {
+        rootNode?.findAccessibilityNodeInfosByText(text)?.forEach {
+            if (it.isClickable) it.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            else it.parent?.performAction(AccessibilityNodeInfo.ACTION_CLICK)
         }
-    }
-
-    private fun findNodeByText(rootNode: AccessibilityNodeInfo, text: String): AccessibilityNodeInfo? {
-        val nodes = rootNode.findAccessibilityNodeInfosByText(text)
-        return if (nodes.isNotEmpty()) nodes[0] else null
     }
 
     override fun onInterrupt() {}
