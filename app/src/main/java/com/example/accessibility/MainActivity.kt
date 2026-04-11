@@ -17,13 +17,19 @@ class MainActivity : Activity() {
         val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(30, 30, 30, 30) }
         scrollView.addView(layout)
 
-        // 1. रिफ्रेश टाइम
-        layout.addView(TextView(this).apply { text = "ऑटो रिफ्रेश टाइम (HH:mm:ss):"; textColor = Color.RED })
+        // 1. रिफ्रेश टाइम (setTextColor इस्तेमाल किया है अब)
+        layout.addView(TextView(this).apply { 
+            text = "ऑटो रिफ्रेश टाइम (HH:mm:ss):"
+            setTextColor(Color.RED) 
+        })
         val timeIn = EditText(this).apply { hint = "10:59:58"; setText(prefs.getString("t_time", "10:59:58")) }
         layout.addView(timeIn)
 
-        // 2. बुकिंग क्लास (SL, 3A, आदि)
-        layout.addView(TextView(this).apply { text = "\nक्लास चुनें (SL, 3A, 2A, 3E):"; textColor = Color.BLUE })
+        // 2. बुकिंग क्लास (setTextColor इस्तेमाल किया है अब)
+        layout.addView(TextView(this).apply { 
+            text = "\nक्लास चुनें (SL, 3A, 2A, 3E):"
+            setTextColor(Color.BLUE) 
+        })
         val radioGroup = RadioGroup(this)
         val classes = listOf("SL", "3A", "2A", "3E")
         val savedCls = prefs.getString("sel_cls", "SL")
@@ -55,15 +61,18 @@ class MainActivity : Activity() {
             val ed = prefs.edit()
             ed.putString("t_time", timeIn.text.toString())
             ed.putString("c_delay", delayIn.text.toString())
-            val rb = findViewById<RadioButton>(radioGroup.checkedRadioButtonId)
-            ed.putString("sel_cls", rb?.text.toString())
+            val checkedId = radioGroup.checkedRadioButtonId
+            if (checkedId != -1) {
+                val rb = findViewById<RadioButton>(checkedId)
+                ed.putString("sel_cls", rb.text.toString())
+            }
             for (i in 0..5) {
                 ed.putString("n${i+1}", inputs[i].first.text.toString())
                 ed.putString("a${i+1}", inputs[i].second.text.toString())
                 ed.putString("g${i+1}", inputs[i].third.text.toString())
             }
             ed.apply()
-            Toast.makeText(this, "डाटा सेट हो गया!", 0).show()
+            Toast.makeText(this, "डाटा सेट हो गया!", Toast.LENGTH_SHORT).show()
         }
         layout.addView(saveBtn)
         setContentView(scrollView)
