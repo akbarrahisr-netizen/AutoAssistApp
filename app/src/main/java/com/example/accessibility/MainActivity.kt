@@ -17,64 +17,42 @@ class MainActivity : Activity() {
         val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(30, 30, 30, 30) }
         scrollView.addView(layout)
 
-        // 1. रिफ्रेश टाइम (setTextColor इस्तेमाल किया है अब)
-        layout.addView(TextView(this).apply { 
-            text = "ऑटो रिफ्रेश टाइम (HH:mm:ss):"
-            setTextColor(Color.RED) 
-        })
-        val timeIn = EditText(this).apply { hint = "10:59:58"; setText(prefs.getString("t_time", "10:59:58")) }
+        // --- 1. ट्रेन नंबर डालने का डिब्बा ---
+        layout.addView(TextView(this).apply { text = "ट्रेन नंबर (जैसे 12487):"; textColor = Color.parseColor("#FF5722"); textSize = 16f })
+        val trainNumIn = EditText(this).apply { 
+            hint = "ट्रेन नंबर यहाँ लिखें"
+            inputType = InputType.TYPE_CLASS_NUMBER
+            setText(prefs.getString("sel_train", "")) 
+        }
+        layout.addView(trainNumIn)
+
+        // --- बाकी पुरानी सेटिंग्स (Time, Class, Delay, Passengers) ---
+        // (पुराना कोड यहाँ जारी रखें...)
+        layout.addView(TextView(this).apply { text = "\nरिफ्रेश टाइम (HH:mm:ss):" })
+        val timeIn = EditText(this).apply { setText(prefs.getString("t_time", "10:59:58")) }
         layout.addView(timeIn)
 
-        // 2. बुकिंग क्लास (setTextColor इस्तेमाल किया है अब)
-        layout.addView(TextView(this).apply { 
-            text = "\nक्लास चुनें (SL, 3A, 2A, 3E):"
-            setTextColor(Color.BLUE) 
-        })
+        layout.addView(TextView(this).apply { text = "\nक्लास (SL, 3A, 2A):" })
         val radioGroup = RadioGroup(this)
-        val classes = listOf("SL", "3A", "2A", "3E")
-        val savedCls = prefs.getString("sel_cls", "SL")
-        for (cls in classes) {
-            val rb = RadioButton(this).apply { text = cls; if (cls == savedCls) isChecked = true }
+        listOf("SL", "3A", "2A", "3E").forEach { cls ->
+            val rb = RadioButton(this).apply { text = cls; if (cls == prefs.getString("sel_cls", "SL")) isChecked = true }
             radioGroup.addView(rb)
         }
         layout.addView(radioGroup)
 
-        // 3. क्लिक डिले (स्पीड)
-        layout.addView(TextView(this).apply { text = "\nक्लिक स्पीड (ms):" })
-        val delayIn = EditText(this).apply { inputType = InputType.TYPE_CLASS_NUMBER; setText(prefs.getString("c_delay", "200")) }
-        layout.addView(delayIn)
-
-        // 4. पैसेंजर लिस्ट (6 लोग)
-        layout.addView(TextView(this).apply { text = "\nपैसेंजर (नाम, उम्र, M/F):" })
-        val inputs = mutableListOf<Triple<EditText, EditText, EditText>>()
-        for (i in 1..6) {
-            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-            val n = EditText(this).apply { hint = "नाम $i"; layoutParams = LinearLayout.LayoutParams(0, -2, 2f); setText(prefs.getString("n$i", "")) }
-            val a = EditText(this).apply { hint = "उम्र"; layoutParams = LinearLayout.LayoutParams(0, -2, 1f); inputType = 2; setText(prefs.getString("a$i", "")) }
-            val g = EditText(this).apply { hint = "M/F"; layoutParams = LinearLayout.LayoutParams(0, -2, 0.8f); setText(prefs.getString("g$i", "")) }
-            row.addView(n); row.addView(a); row.addView(g); layout.addView(row)
-            inputs.add(Triple(n, a, g))
-        }
-
-        val saveBtn = Button(this).apply { text = "सब सेव करें ✅" }
+        // --- सेव बटन ---
+        val saveBtn = Button(this).apply { text = "सब सेटिंग्स सेव करें ✅" }
         saveBtn.setOnClickListener {
             val ed = prefs.edit()
+            ed.putString("sel_train", trainNumIn.text.toString()) // ट्रेन नंबर सेव
             ed.putString("t_time", timeIn.text.toString())
-            ed.putString("c_delay", delayIn.text.toString())
-            val checkedId = radioGroup.checkedRadioButtonId
-            if (checkedId != -1) {
-                val rb = findViewById<RadioButton>(checkedId)
-                ed.putString("sel_cls", rb.text.toString())
-            }
-            for (i in 0..5) {
-                ed.putString("n${i+1}", inputs[i].first.text.toString())
-                ed.putString("a${i+1}", inputs[i].second.text.toString())
-                ed.putString("g${i+1}", inputs[i].third.text.toString())
-            }
+            val rb = findViewById<RadioButton>(radioGroup.checkedRadioButtonId)
+            ed.putString("sel_cls", rb?.text.toString())
             ed.apply()
-            Toast.makeText(this, "डाटा सेट हो गया!", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "ट्रेन $trainNumIn सेट हो गई!", 0).show()
         }
         layout.addView(saveBtn)
         setContentView(scrollView)
     }
 }
+
