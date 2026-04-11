@@ -17,7 +17,7 @@ class MainActivity : Activity() {
         val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(30, 30, 30, 30) }
         scrollView.addView(layout)
 
-        // 1. रिफ्रेश टाइम और ट्रेन नंबर (Boxes)
+        // 1. रिफ्रेश टाइम और ट्रेन नंबर बॉक्स
         layout.addView(TextView(this).apply { text = "ऑटो रिफ्रेश टाइम (HH:mm:ss):"; setTextColor(Color.RED) })
         val timeIn = EditText(this).apply { hint = "10:59:59"; setText(prefs.getString("t_time", "10:59:59")) }
         layout.addView(timeIn)
@@ -63,10 +63,9 @@ class MainActivity : Activity() {
                 ed.putString("g${i+1}", inputs[i].third.text.toString())
             }
             ed.apply()
-            Toast.makeText(this, "डाटा सेव हो गया!", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "सेव हो गया!", Toast.LENGTH_SHORT).show()
         }
         layout.addView(saveBtn)
         setContentView(scrollView)
     }
 }
-
