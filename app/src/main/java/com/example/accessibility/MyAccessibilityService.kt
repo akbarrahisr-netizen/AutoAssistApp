@@ -11,94 +11,90 @@ import java.util.Calendar
 
 class MyAccessibilityService : AccessibilityService() {
 
-    private var currentPassengerIndex = 1
+    private var currentIdx = 1
     private val handler = Handler(Looper.getMainLooper())
-    private var isTimeTriggered = false
+    private var isTriggered = false
 
     override fun onServiceConnected() {
         super.onServiceConnected()
-        startClock()
-    }
-
-    private fun startClock() {
+        // बैकग्राउंड में घड़ी चालू करें
         handler.postDelayed(object : Runnable {
             override fun run() {
                 val prefs = getSharedPreferences("PassengerData", Context.MODE_PRIVATE)
-                val target = prefs.getString("target_time", "10:59:58") ?: "10:59:58"
-                
-                val cal = Calendar.getInstance()
-                val now = String.format("%02d:%02d:%02d", cal.get(Calendar.HOUR_OF_DAY), cal.get(Calendar.MINUTE), cal.get(Calendar.SECOND))
+                val target = prefs.getString("t_time", "10:59:58") ?: "10:59:58"
+                val now = String.format("%02d:%02d:%02d", Calendar.getInstance().get(Calendar.HOUR_OF_DAY), Calendar.getInstance().get(Calendar.MINUTE), Calendar.getInstance().get(Calendar.SECOND))
 
-                if (now == target && !isTimeTriggered) {
+                if (now == target && !isTriggered) {
                     clickByText(rootInActiveWindow, "Refresh")
-                    isTimeTriggered = true
+                    isTriggered = true
                 }
-                handler.postDelayed(this, 1000)
+                handler.postDelayed(this, 500)
             }
-        }, 1000)
+        }, 500)
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        val packageName = event?.packageName?.toString() ?: ""
-        if (!packageName.contains("irctc")) return
+        val pkg = event?.packageName?.toString() ?: ""
+        if (!pkg.contains("irctc")) return
 
-        val rootNode = rootInActiveWindow ?: return
+        val root = rootInActiveWindow ?: return
         val prefs = getSharedPreferences("PassengerData", Context.MODE_PRIVATE)
+        val delay = prefs.getString("c_delay", "200")?.toLong() ?: 200L
 
-        // --- 'अवेलेबल' (AVL) चेक ---
-        if (prefs.getBoolean("check_avl", true)) {
-            val avlNodes = rootNode.findAccessibilityNodeInfosByText("AVL")
-            val availableNodes = rootNode.findAccessibilityNodeInfosByText("AVAILABLE")
-            
-            if (avlNodes.isNotEmpty() || availableNodes.isNotEmpty()) {
-                clickByText(rootNode, "PASSENGER DETAILS")
-            }
+        // 1. चुनी हुई क्लास (3A, SL आदि) पर क्लिक करें
+        val selCls = prefs.getString("sel_cls", "SL") ?: "SL"
+        clickByText(root, selCls)
+
+        // 2. अगर हरा "AVL" दिखा, तो सीधे पैसेंजर डिटेल्स पर जाएँ
+        if (findNode(root, "AVL") != null || findNode(root, "AVAILABLE") != null) {
+            clickByText(root, "PASSENGER DETAILS")
         }
 
-        // पैसेंजर फॉर्म भरने वाला पुराना लॉजिक यहाँ काम करता रहेगा
-        processPassengerForms(rootNode, prefs)
-    }
+        // 3. पैसेंजर फॉर्म भरना
+        clickByText(root, "OK") // पॉप-अप हटाएँ
+        val edits = mutableListOf<AccessibilityNodeInfo>()
+        findFields(root, edits)
 
-    private fun processPassengerForms(rootNode: AccessibilityNodeInfo, prefs: android.content.SharedPreferences) {
-        val editTexts = mutableListOf<AccessibilityNodeInfo>()
-        findFields(rootNode, editTexts)
-        
         val total = (1..6).count { !prefs.getString("n$it", "").isNullOrEmpty() }
 
-        if (editTexts.size >= 2 && editTexts[0].text.isNullOrEmpty()) {
-            val name = prefs.getString("n$currentPassengerIndex", "") ?: ""
-            val age = prefs.getString("a$currentPassengerIndex", "") ?: ""
-            val gender = prefs.getString("g$currentPassengerIndex", "M") ?: "M"
+        if (edits.size >= 2 && edits[0].text.isNullOrEmpty()) {
+            val name = prefs.getString("n$currentIdx", "") ?: ""
+            val age = prefs.getString("a$currentIdx", "") ?: ""
+            val gender = if (prefs.getString("g$currentIdx", "M") == "F") "Female" else "Male"
 
             if (name.isNotEmpty()) {
-                inputText(editTexts[0], name)
-                inputText(editTexts[1], age)
-                clickByText(rootNode, if (gender.uppercase() == "F") "Female" else "Male")
-                handler.postDelayed({ clickByText(rootNode, "Add Passenger"); currentPassengerIndex++ }, 150)
+                input(edits[0], name)
+                input(edits[1], age)
+                clickByText(root, gender)
+                handler.postDelayed({ clickByText(root, "Add Passenger"); currentIdx++ }, delay)
             }
-        } else if (currentPassengerIndex > total && total > 0) {
-            clickByText(rootNode, "REVIEW JOURNEY DETAILS")
+        } else if (currentIdx > total && total > 0) {
+            handler.postDelayed({ clickByText(root, "REVIEW JOURNEY DETAILS") }, delay)
         } else {
-            clickByText(rootNode, "OK")
-            clickByText(rootNode, "+ Add New")
+            clickByText(root, "+ Add New")
         }
     }
 
-    private fun findFields(node: AccessibilityNodeInfo, list: MutableList<AccessibilityNodeInfo>) {
-        if (node.className == "android.widget.EditText") list.add(node)
-        for (i in 0 until node.childCount) node.getChild(i)?.let { findFields(it, list) }
+    private fun findFields(n: AccessibilityNodeInfo, l: MutableList<AccessibilityNodeInfo>) {
+        if (n.className == "android.widget.EditText") l.add(n)
+        for (i in 0 until n.childCount) n.getChild(i)?.let { findFields(it, l) }
     }
 
-    private fun inputText(node: AccessibilityNodeInfo, text: String) {
-        val args = Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text) }
-        node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+    private fun input(n: AccessibilityNodeInfo, t: String) {
+        val b = Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, t) }
+        n.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, b)
     }
 
-    private fun clickByText(rootNode: AccessibilityNodeInfo?, text: String) {
-        rootNode?.findAccessibilityNodeInfosByText(text)?.forEach {
+    private fun clickByText(r: AccessibilityNodeInfo?, t: String) {
+        r?.findAccessibilityNodeInfosByText(t)?.forEach {
             if (it.isClickable) it.performAction(AccessibilityNodeInfo.ACTION_CLICK)
             else it.parent?.performAction(AccessibilityNodeInfo.ACTION_CLICK)
         }
+    }
+
+    private fun findNode(r: AccessibilityNodeInfo, t: String): AccessibilityNodeInfo? {
+        val n = r.findAccessibilityNodeInfosByText(t)
+        return if (n.isNotEmpty()) n[0] else null
     }
 
     override fun onInterrupt() {}
