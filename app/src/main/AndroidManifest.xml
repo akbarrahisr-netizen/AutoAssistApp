@@ -1,32 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
 
-    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
-    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged"
 
-    <application
-        android:allowBackup="true"
-        android:label="AutoAssist"
-        android:supportsRtl="true"
-        android:theme="@android:style/Theme.NoTitleBar">
+    android:accessibilityFeedbackType="feedbackGeneric"
 
-        <activity android:name=".MainActivity" android:exported="true">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity>
+    android:accessibilityFlags="flagIncludeNotImportantViews|flagReportViewIds"
 
-        <service android:name=".MyAccessibilityService"
-            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.accessibilityservice.AccessibilityService" />
-            </intent-filter>
-            <meta-data android:name="android.accessibilityservice" android:resource="@xml/accessibility_service_config" />
-        </service>
+    android:canRetrieveWindowContent="true"
 
-    </application>
-</manifest>
+    android:canPerformGestures="true"
+
+    android:notificationTimeout="200"
+
+    android:packageNames="cris.org.in.prs.ima"
+
+    android:description="@string/app_name" />
