@@ -1,122 +1,27 @@
-package com.example.accessibility
+<?xml version="1.0" encoding="utf-8"?>
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
 
-import android.accessibilityservice.AccessibilityService
-import android.graphics.PixelFormat
-import android.view.*
-import android.view.accessibility.AccessibilityEvent
-import android.view.accessibility.AccessibilityNodeInfo
-import android.widget.LinearLayout
-import android.widget.TextView
-import android.graphics.Color
-import android.os.Handler
-import android.os.Looper
+    android:description="@string/app_name"
 
-class MyAccessibilityService : AccessibilityService() {
+    android:accessibilityEventTypes="
+        typeWindowStateChanged|
+        typeWindowContentChanged|
+        typeViewFocused"
 
-    private var floatingPanel: LinearLayout? = null
-    private var statusText: TextView? = null
-    private val handler = Handler(Looper.getMainLooper())
+    android:accessibilityFeedbackType="feedbackGeneric"
 
-    private var lastUpdateTime = 0L
+    android:notificationTimeout="100"
 
-    override fun onServiceConnected() {
-        super.onServiceConnected()
-        createFloatingPanel()
-        updateStatus("🚀 Service Started")
-    }
+    android:canRetrieveWindowContent="true"
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        val root = rootInActiveWindow ?: return
+    android:canPerformGestures="true"
 
-        val now = System.currentTimeMillis()
-        if (now - lastUpdateTime < 200) return
-        lastUpdateTime = now
+    android:accessibilityFlags="
+        flagDefault|
+        flagReportViewIds|
+        flagRetrieveInteractiveWindows"
 
-        val editFields = findNodesByClassName(root, "android.widget.EditText")
+    android:packageNames="cris.org.in.prs.ima"
 
-        when {
-            editFields.isNotEmpty() -> {
-                updateStatus("📝 ${editFields.size} input fields found")
-            }
-            isLoading(root) -> {
-                updateStatus("⏳ Loading screen...")
-            }
-            else -> {
-                updateStatus("👀 Scanning UI...")
-            }
-        }
-    }
-
-    // ---------------- FLOATING UI ----------------
-    private fun createFloatingPanel() {
-        val wm = getSystemService(WINDOW_SERVICE) as WindowManager
-
-        floatingPanel = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.parseColor("#CC000000"))
-            setPadding(20, 15, 20, 15)
-        }
-
-        statusText = TextView(this).apply {
-            text = "Initializing..."
-            setTextColor(Color.WHITE)
-            textSize = 13f
-        }
-
-        floatingPanel?.addView(statusText)
-
-        val params = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-            y = 120
-        }
-
-        wm.addView(floatingPanel, params)
-    }
-
-    // ---------------- STATUS UPDATE ----------------
-    private fun updateStatus(msg: String) {
-        handler.post {
-            statusText?.text = msg
-        }
-    }
-
-    // ---------------- NODE SCAN ----------------
-    private fun findNodesByClassName(
-        root: AccessibilityNodeInfo,
-        className: String
-    ): List<AccessibilityNodeInfo> {
-
-        val result = mutableListOf<AccessibilityNodeInfo>()
-        val stack = ArrayDeque<AccessibilityNodeInfo>()
-        stack.add(root)
-
-        while (stack.isNotEmpty()) {
-            val node = stack.removeFirst()
-
-            if (node.className == className) {
-                result.add(node)
-            }
-
-            for (i in 0 until node.childCount) {
-                node.getChild(i)?.let { stack.add(it) }
-            }
-        }
-        return result
-    }
-
-    // ---------------- LOADING DETECTION ----------------
-    private fun isLoading(root: AccessibilityNodeInfo): Boolean {
-        val keywords = listOf("Loading", "Please wait", "Submitting")
-        return keywords.any {
-            root.findAccessibilityNodeInfosByText(it).isNotEmpty()
-        }
-    }
-
-    override fun onInterrupt() {}
-}
+    android:settingsActivity=""
+    />
