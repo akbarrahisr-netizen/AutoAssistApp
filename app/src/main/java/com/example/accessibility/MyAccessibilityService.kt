@@ -1,344 +1,281 @@
-package com.example.accessibility
+package com.dcds.v10.core
 
-import android.accessibilityservice.AccessibilityService
+import android.app.*
 import android.content.*
-import android.graphics.PixelFormat
+import android.graphics.Rect
 import android.os.*
-import android.view.*
-import android.view.accessibility.*
-import android.widget.TextView
-import android.graphics.Color
-import java.util.*
+import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityNodeInfo
+import kotlinx.coroutines.*
+import java.util.concurrent.ConcurrentHashMap
+import kotlin.math.abs
 
-class MyAccessibilityService : AccessibilityService() {
+// =======================================================
+// 🧠 ENGINEERING TRUTH #1:
+// "UI is a probabilistic system, not a deterministic graph."
+// =======================================================
 
-    private val handler = Handler(Looper.getMainLooper())
-    private var floatingStatus: TextView? = null
+/* -------------------------------------------------------
+   CORE MODELS
+-------------------------------------------------------- */
 
-    // --- STATE CONTROL ---
-    private var step = 0
-    private var pIdx = 1
-    private var avlFound = false
-    private var sniperActive = false
+data class SemanticAnchor(
+    val id: String,
+    val label: String,
+    val expectedType: String,
+    val offsetX: Int,
+    val offsetY: Int
+)
 
-    private var lastActionTime = System.currentTimeMillis()
-    private var lastClickTime = 0L
-    private var retryCount = 0
-    private var lastTriggerTime = ""
-    private var sniperStartTime = 0L
+/* -------------------------------------------------------
+   🧠 REALITY ENGINE
+-------------------------------------------------------- */
 
-    // 🛡️ WATCHDOG (AUTO RECOVERY)
-    private val watchdog = object : Runnable {
-        override fun run() {
-            val now = System.currentTimeMillis()
-            if (sniperActive && (now - lastActionTime > 6000)) {
-                resetAll("Auto Recover 🔄")
-            }
-            handler.postDelayed(this, 2000)
-        }
+object UIHasher {
+
+    // Engineering Truth:
+    // hashCode() is unstable across frames → NEVER USE FOR STATE.
+
+    fun structuralHash(root: AccessibilityNodeInfo?): String {
+        if (root == null) return "NULL"
+
+        val sb = StringBuilder()
+        traverse(root, sb, 0)
+        return sb.toString().hashCode().toString()
     }
 
-    // 🔥 SNIPER LOOP
-    private val sniperTask = object : Runnable {
-        override fun run() {
-            if (!sniperActive) return
+    private fun traverse(node: AccessibilityNodeInfo, sb: StringBuilder, depth: Int) {
+        if (!node.isVisibleToUser || depth > 12) return
 
-            // ⛔ Safety Timeout (40 sec)
-            if (System.currentTimeMillis() - sniperStartTime > 40000) {
-                resetAll("Timeout Stop ⛔")
-                return
-            }
+        sb.append(node.className)
+        sb.append(node.text ?: "")
+        sb.append(node.isClickable)
 
-            val root = rootInActiveWindow
-            if (root != null && root.packageName == "cris.org.in.prs.ima") {
-                if (!avlFound && step <= 1) {
-                    smartClick(root, "Refresh")
-                    smartClick(root, "Updated")
-                    updateAction()
+        val r = Rect()
+        node.getBoundsInScreen(r)
+        sb.append(r.width()).append(r.height())
+
+        for (i in 0 until node.childCount) {
+            node.getChild(i)?.let { traverse(it, sb, depth + 1) }
+        }
+    }
+}
+
+/* -------------------------------------------------------
+   🧠 DRIFT SCORER (UI STABILITY CHECK)
+-------------------------------------------------------- */
+
+class DriftScorer {
+
+    // Engineering Truth:
+    // Drift is temporal, not spatial.
+
+    fun isDrift(oldHash: String, newHash: String): Boolean {
+        return oldHash != newHash
+    }
+}
+
+/* -------------------------------------------------------
+   🧠 BAYESIAN MEMORY (SELF HEALING LAYER)
+-------------------------------------------------------- */
+
+class BayesianMemory {
+
+    private val confidenceMap = ConcurrentHashMap<String, Float>()
+
+    fun get(id: String): Float = confidenceMap[id] ?: 0.5f
+
+    fun success(id: String) {
+        val v = get(id)
+        confidenceMap[id] = (v + 0.05f).coerceAtMost(0.95f)
+    }
+
+    fun failure(id: String) {
+        val v = get(id)
+        confidenceMap[id] = (v - 0.12f).coerceAtLeast(0.1f)
+    }
+}
+
+/* -------------------------------------------------------
+   🧠 SEMANTIC RESOLVER
+-------------------------------------------------------- */
+
+class AnchorResolver {
+
+    fun resolve(
+        root: AccessibilityNodeInfo,
+        anchor: SemanticAnchor
+    ): AccessibilityNodeInfo? {
+
+        val labels = root.findAccessibilityNodeInfosByText(anchor.label)
+        val label = labels.firstOrNull { it.isVisibleToUser } ?: return null
+
+        val rect = Rect()
+        label.getBoundsInScreen(rect)
+
+        val targetX = rect.centerX() + anchor.offsetX
+        val targetY = rect.centerY() + anchor.offsetY
+
+        return findClosest(root, targetX, targetY, anchor.expectedType)
+    }
+
+    private fun findClosest(
+        root: AccessibilityNodeInfo,
+        x: Int,
+        y: Int,
+        type: String
+    ): AccessibilityNodeInfo? {
+
+        var best: AccessibilityNodeInfo? = null
+        var bestScore = Float.MAX_VALUE
+
+        fun scan(node: AccessibilityNodeInfo) {
+            if (!node.isVisibleToUser) return
+
+            if (node.className == type) {
+                val r = Rect()
+                node.getBoundsInScreen(r)
+
+                val dx = abs(r.centerX() - x)
+                val dy = abs(r.centerY() - y)
+                val score = dx + dy
+
+                if (score < bestScore) {
+                    bestScore = score.toFloat()
+                    best = node
                 }
             }
-            handler.postDelayed(this, 350)
-        }
-    }
 
-    override fun onServiceConnected() {
-        super.onServiceConnected()
-        showFloating()
-        handler.post(watchdog)
-
-        handler.postDelayed(object : Runnable {
-            override fun run() {
-                val prefs = getSharedPreferences("AutoData", MODE_PRIVATE)
-                val target = prefs.getString("t_time", "11:00:00") ?: "11:00:00"
-                val now = currentTime()
-
-                if (now.startsWith(target.substring(0,5)) && lastTriggerTime != target) {
-                    lastTriggerTime = target
-                    sniperActive = true
-                    avlFound = false
-                    step = 0
-                    sniperStartTime = System.currentTimeMillis()
-                    handler.post(sniperTask)
-                    showStatus("🔥 SNIPER ACTIVE")
-                }
-                handler.postDelayed(this, 200)
-            }
-        }, 200)
-    }
-
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        if (event == null) return
-        if (event.eventType != AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED &&
-            event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
-
-        val root = rootInActiveWindow ?: return
-
-        // 🔴 PACKAGE CHECK
-        if (root.packageName != "cris.org.in.prs.ima") return
-
-        // 🔴 LOADING GUARD
-        if (isScreenLoading(root)) return
-
-        val prefs = getSharedPreferences("AutoData", MODE_PRIVATE)
-        val delay = (prefs.getString("c_delay", "300")?.toLong() ?: 300L) + (40..100).random()
-
-        when (step) {
-            0 -> selectTrain(root, prefs, delay)
-            1 -> handleAvailability(root)
-            2 -> fillForm(root, prefs, delay)
-        }
-    }
-
-    private fun selectTrain(root: AccessibilityNodeInfo, prefs: SharedPreferences, delay: Long) {
-        val train = prefs.getString("t_num", "") ?: ""
-        val cls = prefs.getString("sel_cls", "SL") ?: "SL"
-
-        if (root.findAccessibilityNodeInfosByText(train).isNotEmpty()) {
-            if (smartClick(root, cls)) {
-                updateAction()
-                handler.postDelayed({ step = 1 }, delay)
-            }
-        } else {
-            smartScroll(root)
-        }
-    }
-
-    private fun handleAvailability(root: AccessibilityNodeInfo) {
-        if (!avlFound && isAvailableSmart(root)) {
-            avlFound = true
-            handler.removeCallbacks(sniperTask)
-
-            retryAction {
-                val r = rootInActiveWindow ?: return@retryAction false
-                if (smartClick(r, "PASSENGER DETAILS")) {
-                    step = 2
-                    showStatus("🎯 TARGET LOCKED")
-                    true
-                } else false
+            for (i in 0 until node.childCount) {
+                node.getChild(i)?.let { scan(it) }
             }
         }
+
+        scan(root)
+        return best
     }
+}
 
-    private fun fillForm(root: AccessibilityNodeInfo, prefs: SharedPreferences, delay: Long) {
+/* -------------------------------------------------------
+   🧠 UAEK KERNEL v10.5 (CORE BRAIN)
+-------------------------------------------------------- */
 
-        smartClick(root, "OK")
+class UAEKKernel(
+    private val memory: BayesianMemory,
+    private val resolver: AnchorResolver,
+    private val drift: DriftScorer
+) {
 
-        val edits = getEdits(root)
+    private var lastHash: String = ""
 
-        if (edits.size < 2) {
-            handler.postDelayed({
-                fillForm(rootInActiveWindow ?: root, prefs, delay)
-            }, 250)
+    fun process(
+        root: AccessibilityNodeInfo,
+        anchor: SemanticAnchor
+    ) {
+        val newHash = UIHasher.structuralHash(root)
+
+        // Engineering Truth:
+        // If UI changed → DO NOT EXECUTE immediately
+        if (drift.isDrift(lastHash, newHash)) {
+            lastHash = newHash
             return
         }
 
-        val total = (1..6).count {
-            !(prefs.getString("n$it", "") ?: "").isEmpty()
-        }
+        val confidence = memory.get(anchor.id)
+        if (confidence < 0.35f) return
 
-        if (edits[0].text.isNullOrEmpty()) {
+        val node = resolver.resolve(root, anchor) ?: return
 
-            val name = prefs.getString("n$pIdx", "") ?: ""
-            val age = prefs.getString("a$pIdx", "") ?: ""
-            val gender = if (prefs.getString("g$pIdx", "M") == "F") "Female" else "Male"
+        val success = node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
 
-            if (name.isEmpty()) return
+        if (success) memory.success(anchor.id)
+        else memory.failure(anchor.id)
+    }
+}
 
-            inputSafe(edits[0], name)
-            inputSafe(edits[1], age)
+/* -------------------------------------------------------
+   🧠 EXECUTION VERIFICATION LAYER
+-------------------------------------------------------- */
 
-            handler.postDelayed({
-                val r = rootInActiveWindow ?: return@postDelayed
+class ExecutionVerifier {
 
-                if (smartClick(r, gender)) {
-                    handler.postDelayed({
-                        val now = System.currentTimeMillis()
+    fun verify(
+        oldHash: String,
+        newRoot: AccessibilityNodeInfo?
+    ): Boolean {
+        if (newRoot == null) return false
+        val newHash = UIHasher.structuralHash(newRoot)
+        return oldHash != newHash
+    }
+}
 
-                        if (now - lastClickTime > 800) {
-                            if (smartClick(rootInActiveWindow, "Add Passenger")) {
-                                lastClickTime = now
-                                pIdx++
-                                updateAction()
-                            }
-                        }
-                    }, delay)
-                }
-            }, delay)
+/* -------------------------------------------------------
+   🧪 ARS v1 CHAOS SIMULATOR (TEST LAYER ONLY)
+-------------------------------------------------------- */
 
-        } else if (pIdx > total && total > 0) {
+class ChaosInjector {
 
-            if (smartClick(root, "REVIEW JOURNEY DETAILS")) {
+    // Engineering Truth:
+    // "If system survives chaos, it survives production."
 
-                // 🎯 CAPTCHA AUTO FOCUS
-                val captchaNodes = root.findAccessibilityNodeInfosByText("Captcha")
-                if (captchaNodes.isNotEmpty()) {
-                    val edit = getEdits(root).lastOrNull()
-                    edit?.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
-                }
-
-                handler.postDelayed({
-                    resetAll("Ready for Payment ✅")
-                }, 2000)
-            }
-
-        } else {
-            if (edits.size < 3) {
-                smartClick(root, "Add New")
-                updateAction()
-            }
-        }
+    fun injectLayoutShift() {
+        // simulate ad injection / UI push
     }
 
-    // --- TOOLS ---
-
-    private fun isScreenLoading(root: AccessibilityNodeInfo): Boolean {
-        val list = listOf("Loading", "Please wait")
-        for (t in list) {
-            if (root.findAccessibilityNodeInfosByText(t).isNotEmpty()) return true
-        }
-        return false
+    fun injectDelay() {
+        Thread.sleep((50..200).random().toLong())
     }
 
-    private fun isAvailableSmart(root: AccessibilityNodeInfo): Boolean {
-        val good = listOf("AVL", "AVAILABLE")
-        val bad = listOf("WL", "RAC", "NOT AVAILABLE")
-
-        for (b in bad) {
-            if (root.findAccessibilityNodeInfosByText(b).isNotEmpty()) return false
-        }
-        for (g in good) {
-            if (root.findAccessibilityNodeInfosByText(g).isNotEmpty()) return true
-        }
-        return false
+    fun injectNoise() {
+        // simulate flicker / refresh
     }
+}
 
-    private fun smartScroll(root: AccessibilityNodeInfo) {
-        if (root.isScrollable) {
-            root.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
-        }
+/* -------------------------------------------------------
+   🛡️ PERSISTENCE LAYER (OPPO / COLOROS SAFE MODE)
+-------------------------------------------------------- */
+
+class DcdsWatchdog(private val service: Service) {
+
+    fun start() {
+        val notification = Notification.Builder(service, "DCDS")
+            .setContentTitle("DCDS v10.5 Active")
+            .setContentText("Cognitive Engine Running")
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .build()
+
+        service.startForeground(1001, notification)
     }
+}
 
-    private fun retryAction(action: () -> Boolean) {
-        if (action()) {
-            retryCount = 0
-            updateAction()
-        } else if (retryCount < 5) {
-            retryCount++
-            handler.postDelayed({ retryAction(action) }, 250)
-        }
-    }
+/* -------------------------------------------------------
+   🧠 ACCESSIBILITY SERVICE BRIDGE
+-------------------------------------------------------- */
 
-    private fun smartClick(root: AccessibilityNodeInfo?, text: String): Boolean {
-        val nodes = root?.findAccessibilityNodeInfosByText(text) ?: return false
-        for (n in nodes) {
-            var p: AccessibilityNodeInfo? = n
-            repeat(6) {
-                if (p?.isClickable == true && p.isEnabled) {
-                    p.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    updateAction()
-                    return true
-                }
-                p = p?.parent
-            }
-        }
-        return false
-    }
+class DcdsService : AccessibilityService() {
 
-    private fun inputSafe(node: AccessibilityNodeInfo, text: String) {
-        val b = Bundle().apply {
-            putCharSequence(
-                AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
-                text
-            )
-        }
+    private lateinit var kernel: UAEKKernel
 
-        node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, b)
-
-        handler.postDelayed({
-            if (node.text?.toString() != text) {
-                node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, b)
-            }
-        }, 120)
-    }
-
-    private fun getEdits(root: AccessibilityNodeInfo): List<AccessibilityNodeInfo> {
-        val list = mutableListOf<AccessibilityNodeInfo>()
-        fun scan(n: AccessibilityNodeInfo?) {
-            if (n == null) return
-            if (n.className == "android.widget.EditText") list.add(n)
-            for (i in 0 until n.childCount) scan(n.getChild(i))
-        }
-        scan(root)
-        return list
-    }
-
-    private fun updateAction() {
-        lastActionTime = System.currentTimeMillis()
-    }
-
-    private fun resetAll(msg: String) {
-        handler.removeCallbacks(sniperTask)
-        step = 0
-        pIdx = 1
-        avlFound = false
-        sniperActive = false
-        retryCount = 0
-        showStatus(msg)
-    }
-
-    private fun currentTime(): String {
-        val c = Calendar.getInstance()
-        return String.format("%02d:%02d:%02d",
-            c.get(Calendar.HOUR_OF_DAY),
-            c.get(Calendar.MINUTE),
-            c.get(Calendar.SECOND)
+    override fun onServiceConnected() {
+        kernel = UAEKKernel(
+            BayesianMemory(),
+            AnchorResolver(),
+            DriftScorer()
         )
     }
 
-    private fun showFloating() {
-        try {
-            val wm = getSystemService(WINDOW_SERVICE) as WindowManager
-            floatingStatus = TextView(this).apply {
-                setBackgroundColor(Color.parseColor("#CC000000"))
-                setTextColor(Color.WHITE)
-                textSize = 14f
-                setPadding(20, 10, 20, 10)
-            }
-            val params = WindowManager.LayoutParams(
-                WindowManager.LayoutParams.WRAP_CONTENT,
-                WindowManager.LayoutParams.WRAP_CONTENT,
-                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-                PixelFormat.TRANSLUCENT
-            )
-            params.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-            params.y = 80
-            wm.addView(floatingStatus, params)
-        } catch (e: Exception) {}
-    }
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        val root = rootInActiveWindow ?: return
 
-    private fun showStatus(msg: String) {
-        floatingStatus?.text = msg
+        val anchor = SemanticAnchor(
+            id = "PASSENGER_NAME",
+            label = "Passenger",
+            expectedType = "android.widget.EditText",
+            offsetX = 200,
+            offsetY = 0
+        )
+
+        kernel.process(root, anchor)
     }
 
     override fun onInterrupt() {}
