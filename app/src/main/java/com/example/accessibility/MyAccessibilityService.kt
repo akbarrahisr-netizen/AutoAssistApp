@@ -1,229 +1,345 @@
-package com.example.aare.v26
+package com.example.accessibility
 
 import android.accessibilityservice.AccessibilityService
-import android.view.accessibility.AccessibilityEvent
-import android.view.accessibility.AccessibilityNodeInfo
-import android.graphics.Rect
-import kotlinx.coroutines.*
-import java.security.MessageDigest
-import java.util.concurrent.ConcurrentHashMap
-import kotlin.math.ln
-import kotlin.random.Random
+import android.content.*
+import android.graphics.PixelFormat
+import android.os.*
+import android.view.*
+import android.view.accessibility.*
+import android.widget.TextView
+import android.graphics.Color
+import java.util.*
 
-/* =========================================================
-   🧬 GROUND SAFETY LAYER
-========================================================= */
+class MyAccessibilityService : AccessibilityService() {
 
-class SafetyGuard {
-    private val cooldown = ConcurrentHashMap<String, Long>()
-    private val WINDOW = 1500L
+    private val handler = Handler(Looper.getMainLooper())
+    private var floatingStatus: TextView? = null
 
-    fun allow(state: String, action: String): Boolean {
-        val key = "$state#$action"
-        val now = System.currentTimeMillis()
-        val last = cooldown[key] ?: 0L
-        if (now - last < WINDOW) return false
-        cooldown[key] = now
-        return true
-    }
-}
+    // --- STATE CONTROL ---
+    private var step = 0
+    private var pIdx = 1
+    private var avlFound = false
+    private var sniperActive = false
 
-/* =========================================================
-   🧠 COMPRESSED WORLD MODEL (NO GRAPH EXPLOSION)
-========================================================= */
+    private var lastActionTime = System.currentTimeMillis()
+    private var lastClickTime = 0L
+    private var retryCount = 0
+    private var lastTriggerTime = ""
+    private var sniperStartTime = 0L
 
-data class Edge(val action: String, val to: String, var weight: Float)
-
-class WorldModel {
-
-    private val memory = ConcurrentHashMap<String, MutableList<Edge>>()
-    private val MAX_BUCKETS = 2000
-
-    fun record(from: String, action: String, to: String) {
-        val key = compress(from)
-
-        if (memory.size > MAX_BUCKETS && !memory.containsKey(key)) {
-            val oldest = memory.keys.firstOrNull()
-            if (oldest != null) memory.remove(oldest)
-        }
-
-        val list = memory.getOrPut(key) { mutableListOf() }
-
-        val existing = list.find { it.action == action && it.to == to }
-        if (existing != null) existing.weight += 0.1f
-        else list.add(Edge(action, to, 1f))
-    }
-
-    fun get(state: String): List<Edge> {
-        return memory[compress(state)] ?: emptyList()
-    }
-
-    private fun compress(s: String): String = s.take(32)
-}
-
-/* =========================================================
-   👁️ STABLE FINGERPRINT
-========================================================= */
-
-class StructuralFingerprint {
-
-    fun hash(root: AccessibilityNodeInfo?): String {
-        if (root == null) return "NULL"
-
-        val sb = StringBuilder()
-        walk(root, sb)
-
-        return sha256(sb.toString())
-    }
-
-    private fun walk(node: AccessibilityNodeInfo?, sb: StringBuilder) {
-        if (node == null || !node.isVisibleToUser) return
-
-        val r = Rect()
-        node.getBoundsInScreen(r)
-
-        sb.append(node.className)
-        sb.append(node.text ?: "")
-        sb.append(node.isClickable)
-        sb.append(r.flattenToString())
-
-        for (i in 0 until node.childCount) {
-            walk(node.getChild(i), sb)
+    // 🛡️ WATCHDOG (AUTO RECOVERY)
+    private val watchdog = object : Runnable {
+        override fun run() {
+            val now = System.currentTimeMillis()
+            if (sniperActive && (now - lastActionTime > 6000)) {
+                resetAll("Auto Recover 🔄")
+            }
+            handler.postDelayed(this, 2000)
         }
     }
 
-    private fun sha256(input: String): String {
-        val md = MessageDigest.getInstance("SHA-256")
-        return md.digest(input.toByteArray()).joinToString("") { "%02x".format(it) }
-    }
-}
+    // 🔥 SNIPER LOOP
+    private val sniperTask = object : Runnable {
+        override fun run() {
+            if (!sniperActive) return
 
-/* =========================================================
-   🔮 ENTROPY ENGINE (REAL DYNAMIC UNCERTAINTY)
-========================================================= */
+            // ⛔ Safety Timeout (40 sec)
+            if (System.currentTimeMillis() - sniperStartTime > 40000) {
+                resetAll("Timeout Stop ⛔")
+                return
+            }
 
-class Predictor(private val world: WorldModel) {
-
-    fun entropy(state: String): Float {
-        val edges = world.get(state)
-        if (edges.isEmpty()) return 0.9f
-
-        val sum = edges.sumOf { it.weight.toDouble() }
-        if (sum <= 0) return 0.9f
-
-        var h = 0.0
-        for (e in edges) {
-            val p = e.weight / sum
-            if (p > 0) h -= p * ln(p)
-        }
-
-        return h.toFloat().coerceIn(0f, 1f)
-    }
-
-    fun predict(state: String, action: String): String {
-        return world.get(state)
-            .filter { it.action == action }
-            .maxByOrNull { it.weight }
-            ?.to ?: "UNKNOWN"
-    }
-}
-
-/* =========================================================
-   🎯 ACTION SPACE
-========================================================= */
-
-class ActionScanner {
-
-    fun scan(root: AccessibilityNodeInfo): List<AccessibilityNodeInfo> {
-        val list = mutableListOf<AccessibilityNodeInfo>()
-        dfs(root, list)
-        return list
-    }
-
-    private fun dfs(node: AccessibilityNodeInfo?, list: MutableList<AccessibilityNodeInfo>) {
-        if (node == null || !node.isVisibleToUser) return
-
-        if (node.isClickable && node.isEnabled) {
-            list.add(node)
-        }
-
-        for (i in 0 until node.childCount) {
-            dfs(node.getChild(i), list)
+            val root = rootInActiveWindow
+            if (root != null && root.packageName == "cris.org.in.prs.ima") {
+                if (!avlFound && step <= 1) {
+                    smartClick(root, "Refresh")
+                    smartClick(root, "Updated")
+                    updateAction()
+                }
+            }
+            handler.postDelayed(this, 350)
         }
     }
-}
-
-/* =========================================================
-   🚀 AARE v26 CORE SERVICE (GROUND-BASED DECISION ENGINE)
-========================================================= */
-
-class AAREv26Service : AccessibilityService() {
-
-    private val world = WorldModel()
-    private val predictor = Predictor(world)
-    private val fp = StructuralFingerprint()
-    private val safety = SafetyGuard()
-    private val scanner = ActionScanner()
-
-    private lateinit var scope: CoroutineScope
 
     override fun onServiceConnected() {
         super.onServiceConnected()
-        scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        showFloating()
+        handler.post(watchdog)
+
+        handler.postDelayed(object : Runnable {
+            override fun run() {
+                val prefs = getSharedPreferences("AutoData", MODE_PRIVATE)
+                val target = prefs.getString("t_time", "11:00:00") ?: "11:00:00"
+                val now = currentTime()
+
+                if (now.startsWith(target.substring(0,5)) && lastTriggerTime != target) {
+                    lastTriggerTime = target
+                    sniperActive = true
+                    avlFound = false
+                    step = 0
+                    sniperStartTime = System.currentTimeMillis()
+                    handler.post(sniperTask)
+                    showStatus("🔥 SNIPER ACTIVE")
+                }
+                handler.postDelayed(this, 200)
+            }
+        }, 200)
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        if (event == null) return
+        if (event.eventType != AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED &&
+            event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
+
         val root = rootInActiveWindow ?: return
 
-        scope.launch {
+        // 🔴 PACKAGE CHECK
+        if (root.packageName != "cris.org.in.prs.ima") return
 
-            val state = fp.hash(root)
-            val candidates = scanner.scan(root)
+        // 🔴 LOADING GUARD
+        if (isScreenLoading(root)) return
 
-            if (candidates.isEmpty()) return@launch
+        val prefs = getSharedPreferences("AutoData", MODE_PRIVATE)
+        val delay = (prefs.getString("c_delay", "300")?.toLong() ?: 300L) + (40..100).random()
 
-            val scored = candidates.map { node ->
-                val key = node.text?.toString() ?: node.className.toString()
-                val next = predictor.predict(state, key)
-                val uncertainty = predictor.entropy(next)
+        when (step) {
+            0 -> selectTrain(root, prefs, delay)
+            1 -> handleAvailability(root)
+            2 -> fillForm(root, prefs, delay)
+        }
+    }
 
-                val exploration = Random.nextFloat() * 0.15f
+    private fun selectTrain(root: AccessibilityNodeInfo, prefs: SharedPreferences, delay: Long) {
+        val train = prefs.getString("t_num", "") ?: ""
+        val cls = prefs.getString("sel_cls", "SL") ?: "SL"
 
-                node to ((1f - uncertainty) + exploration)
+        if (root.findAccessibilityNodeInfosByText(train).isNotEmpty()) {
+            if (smartClick(root, cls)) {
+                updateAction()
+                handler.postDelayed({ step = 1 }, delay)
             }
+        } else {
+            smartScroll(root)
+        }
+    }
 
-            val best = scored.maxByOrNull { it.second }?.first ?: return@launch
+    private fun handleAvailability(root: AccessibilityNodeInfo) {
+        if (!avlFound && isAvailableSmart(root)) {
+            avlFound = true
+            handler.removeCallbacks(sniperTask)
 
-            val actionKey = best.text?.toString() ?: best.className.toString()
-
-            if (!safety.allow(state, actionKey)) return@launch
-
-            val success = withContext(Dispatchers.Main) {
-                try {
-                    best.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                } catch (e: Exception) {
-                    false
-                }
-            }
-
-            if (success) {
-                delay(650)
-
-                val newRoot = rootInActiveWindow
-                if (newRoot != null) {
-                    val nextState = fp.hash(newRoot)
-                    world.record(state, actionKey, nextState)
-                }
+            retryAction {
+                val r = rootInActiveWindow ?: return@retryAction false
+                if (smartClick(r, "PASSENGER DETAILS")) {
+                    step = 2
+                    showStatus("🎯 TARGET LOCKED")
+                    true
+                } else false
             }
         }
     }
 
-    override fun onInterrupt() {
-        if (::scope.isInitialized) scope.cancel()
+    private fun fillForm(root: AccessibilityNodeInfo, prefs: SharedPreferences, delay: Long) {
+
+        smartClick(root, "OK")
+
+        val edits = getEdits(root)
+
+        if (edits.size < 2) {
+            handler.postDelayed({
+                fillForm(rootInActiveWindow ?: root, prefs, delay)
+            }, 250)
+            return
+        }
+
+        val total = (1..6).count {
+            !(prefs.getString("n$it", "") ?: "").isEmpty()
+        }
+
+        if (edits[0].text.isNullOrEmpty()) {
+
+            val name = prefs.getString("n$pIdx", "") ?: ""
+            val age = prefs.getString("a$pIdx", "") ?: ""
+            val gender = if (prefs.getString("g$pIdx", "M") == "F") "Female" else "Male"
+
+            if (name.isEmpty()) return
+
+            inputSafe(edits[0], name)
+            inputSafe(edits[1], age)
+
+            handler.postDelayed({
+                val r = rootInActiveWindow ?: return@postDelayed
+
+                if (smartClick(r, gender)) {
+                    handler.postDelayed({
+                        val now = System.currentTimeMillis()
+
+                        if (now - lastClickTime > 800) {
+                            if (smartClick(rootInActiveWindow, "Add Passenger")) {
+                                lastClickTime = now
+                                pIdx++
+                                updateAction()
+                            }
+                        }
+                    }, delay)
+                }
+            }, delay)
+
+        } else if (pIdx > total && total > 0) {
+
+            if (smartClick(root, "REVIEW JOURNEY DETAILS")) {
+
+                // 🎯 CAPTCHA AUTO FOCUS
+                val captchaNodes = root.findAccessibilityNodeInfosByText("Captcha")
+                if (captchaNodes.isNotEmpty()) {
+                    val edit = getEdits(root).lastOrNull()
+                    edit?.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+                }
+
+                handler.postDelayed({
+                    resetAll("Ready for Payment ✅")
+                }, 2000)
+            }
+
+        } else {
+            if (edits.size < 3) {
+                smartClick(root, "Add New")
+                updateAction()
+            }
+        }
     }
 
-    override fun onDestroy() {
-        super.onDestroy()
-        if (::scope.isInitialized) scope.cancel()
+    // --- TOOLS ---
+
+    private fun isScreenLoading(root: AccessibilityNodeInfo): Boolean {
+        val list = listOf("Loading", "Please wait")
+        for (t in list) {
+            if (root.findAccessibilityNodeInfosByText(t).isNotEmpty()) return true
+        }
+        return false
     }
+
+    private fun isAvailableSmart(root: AccessibilityNodeInfo): Boolean {
+        val good = listOf("AVL", "AVAILABLE")
+        val bad = listOf("WL", "RAC", "NOT AVAILABLE")
+
+        for (b in bad) {
+            if (root.findAccessibilityNodeInfosByText(b).isNotEmpty()) return false
+        }
+        for (g in good) {
+            if (root.findAccessibilityNodeInfosByText(g).isNotEmpty()) return true
+        }
+        return false
+    }
+
+    private fun smartScroll(root: AccessibilityNodeInfo) {
+        if (root.isScrollable) {
+            root.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
+        }
+    }
+
+    private fun retryAction(action: () -> Boolean) {
+        if (action()) {
+            retryCount = 0
+            updateAction()
+        } else if (retryCount < 5) {
+            retryCount++
+            handler.postDelayed({ retryAction(action) }, 250)
+        }
+    }
+
+    private fun smartClick(root: AccessibilityNodeInfo?, text: String): Boolean {
+        val nodes = root?.findAccessibilityNodeInfosByText(text) ?: return false
+        for (n in nodes) {
+            var p: AccessibilityNodeInfo? = n
+            repeat(6) {
+                if (p?.isClickable == true && p.isEnabled) {
+                    p.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    updateAction()
+                    return true
+                }
+                p = p?.parent
+            }
+        }
+        return false
+    }
+
+    private fun inputSafe(node: AccessibilityNodeInfo, text: String) {
+        val b = Bundle().apply {
+            putCharSequence(
+                AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
+                text
+            )
+        }
+
+        node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, b)
+
+        handler.postDelayed({
+            if (node.text?.toString() != text) {
+                node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, b)
+            }
+        }, 120)
+    }
+
+    private fun getEdits(root: AccessibilityNodeInfo): List<AccessibilityNodeInfo> {
+        val list = mutableListOf<AccessibilityNodeInfo>()
+        fun scan(n: AccessibilityNodeInfo?) {
+            if (n == null) return
+            if (n.className == "android.widget.EditText") list.add(n)
+            for (i in 0 until n.childCount) scan(n.getChild(i))
+        }
+        scan(root)
+        return list
+    }
+
+    private fun updateAction() {
+        lastActionTime = System.currentTimeMillis()
+    }
+
+    private fun resetAll(msg: String) {
+        handler.removeCallbacks(sniperTask)
+        step = 0
+        pIdx = 1
+        avlFound = false
+        sniperActive = false
+        retryCount = 0
+        showStatus(msg)
+    }
+
+    private fun currentTime(): String {
+        val c = Calendar.getInstance()
+        return String.format("%02d:%02d:%02d",
+            c.get(Calendar.HOUR_OF_DAY),
+            c.get(Calendar.MINUTE),
+            c.get(Calendar.SECOND)
+        )
+    }
+
+    private fun showFloating() {
+        try {
+            val wm = getSystemService(WINDOW_SERVICE) as WindowManager
+            floatingStatus = TextView(this).apply {
+                setBackgroundColor(Color.parseColor("#CC000000"))
+                setTextColor(Color.WHITE)
+                textSize = 14f
+                setPadding(20, 10, 20, 10)
+            }
+            val params = WindowManager.LayoutParams(
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                PixelFormat.TRANSLUCENT
+            )
+            params.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            params.y = 80
+            wm.addView(floatingStatus, params)
+        } catch (e: Exception) {}
+    }
+
+    private fun showStatus(msg: String) {
+        floatingStatus?.text = msg
+    }
+
+    override fun onInterrupt() {}
 }
