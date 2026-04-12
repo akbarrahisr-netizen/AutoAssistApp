@@ -2,7 +2,10 @@ package com.example.accessibility
 
 import android.app.Activity
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
+import android.provider.Settings
 import android.widget.*
 import android.view.ViewGroup
 import android.widget.LinearLayout
@@ -11,12 +14,18 @@ import android.graphics.Color
 class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        
+        // --- स्क्रीन के ऊपर दिखाने की परमिशन मांगना ---
+        if (!Settings.canDrawOverlays(this)) {
+            val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
+            startActivityForResult(intent, 101)
+        }
+
         val prefs = getSharedPreferences("AutoData", Context.MODE_PRIVATE)
         val scrollView = ScrollView(this)
         val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(30, 30, 30, 30) }
         scrollView.addView(layout)
 
-        // बॉक्स: रिफ्रेश टाइम, ट्रेन नंबर, क्लास
         layout.addView(TextView(this).apply { text = "ऑटो रिफ्रेश टाइम (HH:mm:ss):"; setTextColor(Color.RED) })
         val timeIn = EditText(this).apply { hint = "10:59:59"; setText(prefs.getString("t_time", "10:59:59")) }
         layout.addView(timeIn)
@@ -33,7 +42,6 @@ class MainActivity : Activity() {
         layout.addView(radioGroup)
 
         // पैसेंजर लिस्ट (6 लोग)
-        layout.addView(TextView(this).apply { text = "\nपैसेंजर लिस्ट:" })
         val inputs = mutableListOf<Triple<EditText, EditText, EditText>>()
         for (i in 1..6) {
             val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -44,7 +52,7 @@ class MainActivity : Activity() {
             inputs.add(Triple(n, a, g))
         }
 
-        val saveBtn = Button(this).apply { text = "सेटिंग्स सेव करें ✅"; setBackgroundColor(Color.GREEN) }
+        val saveBtn = Button(this).apply { text = "डाटा सेव करें ✅"; setBackgroundColor(Color.GREEN) }
         saveBtn.setOnClickListener {
             val ed = prefs.edit()
             ed.putString("t_time", timeIn.text.toString())
@@ -63,3 +71,4 @@ class MainActivity : Activity() {
         setContentView(scrollView)
     }
 }
+
