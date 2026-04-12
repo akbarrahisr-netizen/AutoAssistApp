@@ -1,10 +1,38 @@
-<?xml version="1.0" encoding="utf-8"?>
-<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
-    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged"
-    android:accessibilityFeedbackType="feedbackGeneric"
-    android:notificationTimeout="100"
-    android:canRetrieveWindowContent="true"
-    android:canPerformGestures="true"
-    android:accessibilityFlags="flagDefault|flagReportViewIds|flagRetrieveInteractiveWindows"
-    android:packageNames="cris.org.in.prs.ima"
-    android:description="@string/app_name" />
+private fun showFloatingPanel() {
+    val wm = getSystemService(WINDOW_SERVICE) as WindowManager
+
+    val layout = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setBackgroundColor(0xCC000000.toInt())
+        setPadding(20, 20, 20, 20)
+    }
+
+    val status = TextView(this).apply {
+        text = "Accessibility Helper Active"
+        setTextColor(0xFFFFFFFF.toInt())
+        textSize = 14f
+    }
+
+    val hint = TextView(this).apply {
+        text = "Tap items manually (Assist Mode)"
+        setTextColor(0xFF00FF00.toInt())
+        textSize = 12f
+    }
+
+    layout.addView(status)
+    layout.addView(hint)
+
+    val params = WindowManager.LayoutParams(
+        WindowManager.LayoutParams.WRAP_CONTENT,
+        WindowManager.LayoutParams.WRAP_CONTENT,
+        WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+        PixelFormat.TRANSLUCENT
+    ).apply {
+        gravity = Gravity.TOP or Gravity.END
+        x = 20
+        y = 200
+    }
+
+    wm.addView(layout, params)
+}
