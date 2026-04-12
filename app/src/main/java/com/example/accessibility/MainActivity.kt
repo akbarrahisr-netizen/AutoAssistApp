@@ -15,10 +15,10 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
-        // --- स्क्रीन के ऊपर दिखाने की परमिशन मांगना ---
+        // फ्लोटिंग बटन के लिए सेटिंग चेक
         if (!Settings.canDrawOverlays(this)) {
             val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
-            startActivityForResult(intent, 101)
+            startActivity(intent)
         }
 
         val prefs = getSharedPreferences("AutoData", Context.MODE_PRIVATE)
@@ -26,14 +26,22 @@ class MainActivity : Activity() {
         val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(30, 30, 30, 30) }
         scrollView.addView(layout)
 
+        // 1. रिफ्रेश टाइम
         layout.addView(TextView(this).apply { text = "ऑटो रिफ्रेश टाइम (HH:mm:ss):"; setTextColor(Color.RED) })
         val timeIn = EditText(this).apply { hint = "10:59:59"; setText(prefs.getString("t_time", "10:59:59")) }
         layout.addView(timeIn)
 
-        layout.addView(TextView(this).apply { text = "\nट्रेन नंबर:"; setTextColor(Color.parseColor("#FF5722")) })
-        val trainIn = EditText(this).apply { hint = "जैसे 12488"; inputType = 2; setText(prefs.getString("t_num", "")) }
+        // 2. ट्रेन नंबर
+        layout.addView(TextView(this).apply { text = "\nट्रेन नंबर:"; setTextColor(Color.BLUE) })
+        val trainIn = EditText(this).apply { hint = "12488"; inputType = 2; setText(prefs.getString("t_num", "")) }
         layout.addView(trainIn)
 
+        // 3. क्लिक डिले बॉक्स (यही आपकी डिमांड थी)
+        layout.addView(TextView(this).apply { text = "\nक्लिक डिले (ms में - 0 मतलब सबसे तेज़):"; setTextColor(Color.BLACK) })
+        val delayIn = EditText(this).apply { hint = "0"; inputType = 2; setText(prefs.getString("c_delay", "0")) }
+        layout.addView(delayIn)
+
+        // 4. क्लास सिलेक्शन
         val radioGroup = RadioGroup(this)
         listOf("SL", "3A", "2A", "3E").forEach { cls ->
             val rb = RadioButton(this).apply { text = cls; if (cls == prefs.getString("sel_cls", "SL")) isChecked = true }
@@ -41,7 +49,7 @@ class MainActivity : Activity() {
         }
         layout.addView(radioGroup)
 
-        // पैसेंजर लिस्ट (6 लोग)
+        // 5. पैसेंजर लिस्ट
         val inputs = mutableListOf<Triple<EditText, EditText, EditText>>()
         for (i in 1..6) {
             val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -57,6 +65,7 @@ class MainActivity : Activity() {
             val ed = prefs.edit()
             ed.putString("t_time", timeIn.text.toString())
             ed.putString("t_num", trainIn.text.toString())
+            ed.putString("c_delay", delayIn.text.toString())
             val rb = findViewById<RadioButton>(radioGroup.checkedRadioButtonId)
             ed.putString("sel_cls", rb?.text.toString())
             for (i in 0..5) {
@@ -65,10 +74,9 @@ class MainActivity : Activity() {
                 ed.putString("g${i+1}", inputs[i].third.text.toString())
             }
             ed.apply()
-            Toast.makeText(this, "डाटा सेव हो गया!", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "सब कुछ सेव हो गया!", Toast.LENGTH_SHORT).show()
         }
         layout.addView(saveBtn)
         setContentView(scrollView)
     }
 }
-
