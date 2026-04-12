@@ -1,142 +1,144 @@
 package com.example.accessibility
 
 import android.accessibilityservice.AccessibilityService
-import android.app.Notification
-import android.app.NotificationChannel
-import android.app.NotificationManager
+import android.app.*
+import android.content.Context
 import android.graphics.Rect
-import android.os.Build
+import android.os.*
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.abs
 
-/* =======================================================
-   1. DATA MODEL (WHAT TO FIND ON SCREEN)
-======================================================= */
+/**
+ * ================================
+ * 🧠 SIMPLE AUTONOMOUS UI ENGINE (EDUCATIONAL)
+ * ================================
+ * Purpose: Learn Accessibility + UI tracking safely
+ */
 
-data class SemanticAnchor(
+data class SemanticTarget(
     val id: String,
-    val label: String
+    val keyword: String,
+    val targetClass: String
 )
 
-/* =======================================================
-   2. UI STATE CHECKER (SCREEN CHANGE DETECTOR)
-======================================================= */
-
-object UIHasher {
+/* -------------------------------
+   UI STATE HASH (STABILITY CHECK)
+--------------------------------*/
+object UIStateHasher {
 
     fun hash(root: AccessibilityNodeInfo?): String {
         if (root == null) return "NULL"
 
-        val sb = StringBuilder()
-        walk(root, sb, 0)
-        return sb.toString().hashCode().toString()
+        val builder = StringBuilder()
+        traverse(root, builder, 0)
+
+        return builder.toString().hashCode().toString()
     }
 
-    private fun walk(node: AccessibilityNodeInfo, sb: StringBuilder, depth: Int) {
-        if (!node.isVisibleToUser || depth > 10) return
+    private fun traverse(node: AccessibilityNodeInfo, sb: StringBuilder, depth: Int) {
+        if (!node.isVisibleToUser || depth > 8) return
 
         sb.append(node.className)
         sb.append(node.text ?: "")
+        sb.append(node.isClickable)
 
-        val r = Rect()
-        node.getBoundsInScreen(r)
-        sb.append(r.centerX()).append(r.centerY())
+        val rect = Rect()
+        node.getBoundsInScreen(rect)
+        sb.append(rect.centerX()).append(rect.centerY())
 
         for (i in 0 until node.childCount) {
-            node.getChild(i)?.let { walk(it, sb, depth + 1) }
+            node.getChild(i)?.let {
+                traverse(it, sb, depth + 1)
+            }
         }
     }
 }
 
-/* =======================================================
-   3. MEMORY (LEARNING SYSTEM)
-======================================================= */
-
-class Memory {
+/* -------------------------------
+   MEMORY (LEARNING LAYER)
+--------------------------------*/
+class SimpleMemory {
     private val map = ConcurrentHashMap<String, Float>()
 
-    fun get(id: String) = map[id] ?: 0.5f
+    fun get(id: String): Float = map[id] ?: 0.5f
 
     fun success(id: String) {
-        map[id] = (get(id) + 0.05f).coerceAtMost(1f)
+        map[id] = (get(id) + 0.05f).coerceAtMost(0.95f)
     }
 
-    fun fail(id: String) {
-        map[id] = (get(id) - 0.1f).coerceAtLeast(0f)
-    }
-}
-
-/* =======================================================
-   4. FIND BUTTON BY TEXT (SEMANTIC SEARCH)
-======================================================= */
-
-class Resolver {
-
-    fun find(root: AccessibilityNodeInfo, label: String): AccessibilityNodeInfo? {
-        val list = root.findAccessibilityNodeInfosByText(label)
-        return list.firstOrNull { it.isVisibleToUser }
+    fun failure(id: String) {
+        map[id] = (get(id) - 0.1f).coerceAtLeast(0.1f)
     }
 }
 
-/* =======================================================
-   5. MAIN ACCESSIBILITY SERVICE
-======================================================= */
+/* -------------------------------
+   NODE RESOLVER (SEMANTIC SEARCH)
+--------------------------------*/
+class NodeResolver {
 
+    fun find(root: AccessibilityNodeInfo, target: SemanticTarget): AccessibilityNodeInfo? {
+        val nodes = root.findAccessibilityNodeInfosByText(target.keyword)
+
+        val match = nodes.firstOrNull {
+            it.isVisibleToUser && it.className == target.targetClass
+        }
+
+        return match
+    }
+}
+
+/* -------------------------------
+   FOREGROUND WATCHDOG (ANDROID SAFE)
+--------------------------------*/
+class Watchdog(private val service: Service) {
+
+    fun start() {
+        val channelId = "ENGINE_CHANNEL"
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                channelId,
+                "Engine Service",
+                NotificationManager.IMPORTANCE_LOW
+            )
+
+            val manager = service.getSystemService(NotificationManager::class.java)
+            manager.createNotificationChannel(channel)
+        }
+
+        val notification = Notification.Builder(service, channelId)
+            .setContentTitle("Accessibility Engine Running")
+            .setContentText("Monitoring UI State...")
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .build()
+
+        service.startForeground(1001, notification)
+    }
+}
+
+/* -------------------------------
+   MAIN ACCESSIBILITY SERVICE
+--------------------------------*/
 class MyAccessibilityService : AccessibilityService() {
 
-    private val memory = Memory()
-    private val resolver = Resolver()
+    private val memory = SimpleMemory()
+    private val resolver = NodeResolver()
 
     private var lastHash = ""
     private var stableFrames = 0
 
     override fun onServiceConnected() {
-        startForegroundService()
+        Watchdog(this).start()
     }
-
-    /* ---------------------------------------------------
-       FOREGROUND SERVICE (OPPO SAFE MODE)
-    --------------------------------------------------- */
-
-    private fun startForegroundService() {
-
-        val channelId = "dcds_channel"
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                channelId,
-                "DCDS Engine",
-                NotificationManager.IMPORTANCE_LOW
-            )
-            val manager = getSystemService(NotificationManager::class.java)
-            manager.createNotificationChannel(channel)
-        }
-
-        val notification = Notification.Builder(this, channelId)
-            .setContentTitle("Engine Running")
-            .setContentText("Accessibility Active")
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
-            .build()
-
-        startForeground(1001, notification)
-    }
-
-    /* ---------------------------------------------------
-       MAIN LOGIC LOOP
-    --------------------------------------------------- */
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
 
         val root = rootInActiveWindow ?: return
 
-        val currentHash = UIHasher.hash(root)
-
-        /* ===================================================
-           ENGINEERING TRUTH:
-           UI change = instability
-        =================================================== */
+        // 1. UI STABILITY CHECK
+        val currentHash = UIStateHasher.hash(root)
 
         if (currentHash != lastHash) {
             lastHash = currentHash
@@ -146,47 +148,33 @@ class MyAccessibilityService : AccessibilityService() {
 
         stableFrames++
 
-        // UI must be stable for 2 frames
+        // wait for stable UI
         if (stableFrames < 2) return
 
-        /* ===================================================
-           TARGET: EXAMPLE (Login Button)
-        =================================================== */
-
-        val anchor = SemanticAnchor(
-            id = "LOGIN",
-            label = "Login"
+        // 2. GENERIC TARGET (FOR LEARNING ONLY)
+        val target = SemanticTarget(
+            id = "BTN_1",
+            keyword = "Login",
+            targetClass = "android.widget.Button"
         )
 
-        val node = resolver.find(root, anchor.label)
+        // 3. FIND NODE
+        val node = resolver.find(root, target)
 
         if (node != null && node.isClickable) {
 
-            val clicked = node.performAction(
-                AccessibilityNodeInfo.ACTION_CLICK
-            )
+            val success = node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
 
-            // =================================================
-            // VERIFICATION (IMPORTANT PART)
-            // =================================================
-
-            val newRoot = rootInActiveWindow
-            val newHash = UIHasher.hash(newRoot)
-
-            val uiChanged = newHash != currentHash
-
-            if (clicked && uiChanged) {
-                memory.success(anchor.id)
+            if (success) {
+                memory.success(target.id)
             } else {
-                memory.fail(anchor.id)
+                memory.failure(target.id)
             }
 
-            // cooldown to avoid double click
-            stableFrames = -2
+            // cooldown to prevent repeated clicks
+            stableFrames = -3
         }
     }
 
-    override fun onInterrupt() {
-        // required override
-    }
+    override fun onInterrupt() {}
 }
