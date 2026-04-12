@@ -1,269 +1,183 @@
-class MyAccessibilityService : AccessibilityService() {
+package com.example.accessibility
 
-    private val handler = Handler(Looper.getMainLooper())
-    private var floatingStatus: TextView? = null
+import android.app.Activity
+import android.content.*
+import android.net.Uri
+import android.os.Bundle
+import android.provider.Settings
+import android.text.InputFilter
+import android.text.InputType
+import android.view.Gravity
+import android.view.ViewGroup
+import android.view.inputmethod.InputMethodManager
+import android.widget.*
+import android.graphics.Color
 
-    private var step = 0
-    private var pIdx = 1
-    private var lastRun = ""
+class MainActivity : Activity() {
 
-    private var lastActionTime = 0L
-    private var scrollCount = 0
-    private var avlHandled = false
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
 
-    override fun onServiceConnected() {
-        super.onServiceConnected()
-        showFloating()
-
-        handler.postDelayed(object : Runnable {
-            override fun run() {
-                val prefs = getSharedPreferences("AutoData", MODE_PRIVATE)
-                val target = prefs.getString("t_time", "11:00:00")!!
-                val now = currentTime()
-
-                floatingStatus?.text = "Time: $now | Step: $step"
-
-                if (now == target && lastRun != now) {
-                    rootInActiveWindow?.let {
-                        safeClick(it, "Refresh")
-                        safeClick(it, "Updated")
-                        resetAll()
-                        lastRun = now
-                    }
-                }
-
-                handler.postDelayed(this, 150)
-            }
-        }, 150)
-    }
-
-    private fun resetAll() {
-        step = 0
-        pIdx = 1
-        scrollCount = 0
-        avlHandled = false
-    }
-
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        if (event == null) return
-
-        if (event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
-            event.eventType != AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) return
-
-        val root = rootInActiveWindow ?: return
-        if (!root.packageName.toString().contains("irctc")) return
-
-        val prefs = getSharedPreferences("AutoData", MODE_PRIVATE)
-        val baseDelay = (prefs.getString("c_delay", "200") ?: "200").toLong()
-        val delay = baseDelay + (50..120).random()
-
-        when (step) {
-            0 -> findTrain(root, prefs, delay)
-            1 -> checkAvailability(root, delay)
-            2 -> fillForm(root, prefs, delay)
-        }
-    }
-
-    private fun findTrain(root: AccessibilityNodeInfo, prefs: SharedPreferences, delay: Long) {
-        val tNum = prefs.getString("t_num", "")!!
-        val cls = prefs.getString("sel_cls", "SL")!!
-
-        val node = root.findAccessibilityNodeInfosByText(tNum).firstOrNull()
-
-        if (node != null) {
-            scrollCount = 0
-            val card = findCard(node)
-
-            if (safeClick(card ?: root, cls)) {
-                handler.postDelayed({ step = 1 }, delay)
-            }
-
-        } else {
-            if (scrollCount < 10) {
-                smartScroll(root)
-                scrollCount++
-            }
-        }
-    }
-
-    private fun checkAvailability(root: AccessibilityNodeInfo, delay: Long) {
-        if (!avlHandled && isAvailable(root)) {
-            avlHandled = true
-
-            handler.postDelayed({
-                val r = rootInActiveWindow ?: return@postDelayed
-                if (safeClick(r, "PASSENGER DETAILS")) {
-                    step = 2
-                }
-            }, delay)
-        }
-    }
-
-    private fun fillForm(root: AccessibilityNodeInfo, prefs: SharedPreferences, delay: Long) {
-        safeClick(root, "OK")
-
-        val edits = getEdits(root)
-        val total = (1..6).count { !prefs.getString("n$it", "").isNullOrEmpty() }
-
-        if (edits.size < 2) {
-            handler.postDelayed({
-                rootInActiveWindow?.let { fillForm(it, prefs, delay) }
-            }, 200)
-            return
+        // Overlay Permission
+        if (!Settings.canDrawOverlays(this)) {
+            startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
         }
 
-        if (edits[0].text.isNullOrEmpty()) {
-            val name = prefs.getString("n$pIdx", "")!!
-            val age = prefs.getString("a$pIdx", "")!!
-            val gender = if (prefs.getString("g$pIdx", "M") == "F") "Female" else "Male"
+        val prefs = getSharedPreferences("AutoData", Context.MODE_PRIVATE)
 
-            if (name.isNotEmpty()) {
-                inputSafe(edits[0], name)
-                inputSafe(edits[1], age)
-
-                handler.postDelayed({
-                    val r = rootInActiveWindow ?: return@postDelayed
-
-                    if (safeClick(r, gender)) {
-                        handler.postDelayed({
-                            val r2 = rootInActiveWindow ?: return@postDelayed
-
-                            if (safeClick(r2, "Add Passenger") || safeClick(r2, "ADD PASSENGER")) {
-                                pIdx++
-                            }
-
-                        }, delay)
-                    }
-
-                }, delay)
-            }
-
-        } else if (pIdx > total && total > 0) {
-
-            if (safeClick(root, "REVIEW JOURNEY DETAILS")) {
-                handler.postDelayed({
-                    val r = rootInActiveWindow ?: return@postDelayed
-                    if (r.findAccessibilityNodeInfosByText("Add Passenger").isEmpty()) {
-                        resetAll()
-                    }
-                }, 1500)
-            }
-
-        } else {
-
-            if (safeClick(root, "Add New") || safeClick(root, "ADD NEW")) {
-                // controlled click
-            }
+        val scrollView = ScrollView(this)
+        val layout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(40, 40, 40, 40)
         }
-    }
+        scrollView.addView(layout)
 
-    // 🔥 MASTER CLICK ENGINE (DEBOUNCE + SAFE)
-    private fun safeClick(root: AccessibilityNodeInfo?, text: String): Boolean {
-        val now = System.currentTimeMillis()
-        if (now - lastActionTime < 300) return false
+        // TITLE
+        layout.addView(TextView(this).apply {
+            text = "AutoAssist Pro 🚉"
+            textSize = 22f
+            setTextColor(Color.parseColor("#1A237E"))
+            gravity = Gravity.CENTER
+            setPadding(0, 0, 0, 30)
+        })
 
-        val nodes = root?.findAccessibilityNodeInfosByText(text) ?: return false
+        // TIME
+        layout.addView(TextView(this).apply { text = "Time (HH:mm:ss)" })
+        val timeIn = EditText(this).apply {
+            hint = "11:00:00"
+            inputType = InputType.TYPE_CLASS_DATETIME
+            setText(prefs.getString("t_time", "11:00:00"))
+        }
+        layout.addView(timeIn)
 
-        for (n in nodes) {
-            var p: AccessibilityNodeInfo? = n
-            var depth = 0
+        // TRAIN
+        layout.addView(TextView(this).apply { text = "Train Number" })
+        val trainIn = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_NUMBER
+            setText(prefs.getString("t_num", "12488"))
+        }
+        layout.addView(trainIn)
 
-            while (p != null && depth < 6) {
-                if (p.isClickable && p.isEnabled) {
-                    p.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    lastActionTime = now
-                    return true
-                }
-                p = p.parent
-                depth++
+        // CLASS (3E ADDED 🔥)
+        layout.addView(TextView(this).apply { text = "Select Class" })
+        val classGroup = RadioGroup(this)
+        val classes = listOf("SL", "3A", "2A", "3E") // 🔴 FIX
+        val savedCls = prefs.getString("sel_cls", "SL")
+
+        classes.forEachIndexed { i, cls ->
+            val rb = RadioButton(this).apply {
+                text = cls
+                id = i + 100
+                if (cls == savedCls) isChecked = true
             }
+            classGroup.addView(rb)
         }
-        return false
-    }
+        layout.addView(classGroup)
 
-    private fun inputSafe(node: AccessibilityNodeInfo, text: String) {
-        val b = Bundle()
-        b.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
-        node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, b)
+        // PASSENGERS
+        val inputs = mutableListOf<Triple<EditText, EditText, EditText>>()
 
-        handler.postDelayed({
-            if (node.text?.toString() != text) {
-                node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, b)
-            }
-        }, 120)
-    }
-
-    private fun isAvailable(root: AccessibilityNodeInfo): Boolean {
-        return root.findAccessibilityNodeInfosByText("AVL").isNotEmpty() ||
-               root.findAccessibilityNodeInfosByText("AVAILABLE").isNotEmpty()
-    }
-
-    private fun smartScroll(root: AccessibilityNodeInfo) {
-        if (root.isScrollable) {
-            root.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
-        } else {
-            for (i in 0 until root.childCount) {
-                val c = root.getChild(i)
-                if (c?.isScrollable == true) {
-                    c.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
-                    return
-                }
-            }
-        }
-    }
-
-    private fun getEdits(r: AccessibilityNodeInfo): List<AccessibilityNodeInfo> {
-        val list = mutableListOf<AccessibilityNodeInfo>()
-        fun traverse(n: AccessibilityNodeInfo?) {
-            if (n == null) return
-            if (n.className == "android.widget.EditText") list.add(n)
-            for (i in 0 until n.childCount) traverse(n.getChild(i))
-        }
-        traverse(r)
-        return list
-    }
-
-    private fun findCard(n: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-        var p: AccessibilityNodeInfo? = n
-        while (p?.parent != null) {
-            p = p.parent
-            if (p?.findAccessibilityNodeInfosByText("Refresh")?.isNotEmpty() == true) return p
-        }
-        return null
-    }
-
-    private fun currentTime(): String {
-        val c = Calendar.getInstance()
-        return String.format("%02d:%02d:%02d",
-            c.get(Calendar.HOUR_OF_DAY),
-            c.get(Calendar.MINUTE),
-            c.get(Calendar.SECOND))
-    }
-
-    private fun showFloating() {
-        try {
-            val wm = getSystemService(WINDOW_SERVICE) as WindowManager
-            floatingStatus = TextView(this).apply {
-                setBackgroundColor(Color.parseColor("#CC000000"))
-                setTextColor(Color.WHITE)
-                setPadding(20, 10, 20, 10)
-                textSize = 14f
+        for (i in 1..6) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                setPadding(0, 10, 0, 10)
             }
 
-            val params = WindowManager.LayoutParams(
-                WindowManager.LayoutParams.WRAP_CONTENT,
-                WindowManager.LayoutParams.WRAP_CONTENT,
-                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-                PixelFormat.TRANSLUCENT
-            )
+            val name = EditText(this).apply {
+                hint = "Name"
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 2f)
+                setText(prefs.getString("n$i", ""))
+            }
 
-            params.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-            params.y = 80
+            val age = EditText(this).apply {
+                hint = "Age"
+                inputType = InputType.TYPE_CLASS_NUMBER
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                setText(prefs.getString("a$i", ""))
+            }
 
-            wm.addView(floatingStatus, params)
-        } catch (e: Exception) {}
+            val gender = EditText(this).apply {
+                hint = "M/F"
+                isAllCaps = true
+                filters = arrayOf(InputFilter.LengthFilter(1))
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                setText(prefs.getString("g$i", "M"))
+            }
+
+            row.addView(name)
+            row.addView(age)
+            row.addView(gender)
+            layout.addView(row)
+
+            inputs.add(Triple(name, age, gender))
+        }
+
+        // SAVE BUTTON
+        val saveBtn = Button(this).apply {
+            text = "SAVE ✅"
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { setMargins(0, 20, 0, 10) } // 🔴 Margin Fix
+        }
+
+        saveBtn.setOnClickListener {
+
+            // 🔴 Keyboard Hide FIX
+            val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+            imm.hideSoftInputFromWindow(currentFocus?.windowToken, 0)
+
+            val ed = prefs.edit()
+            ed.putString("t_time", timeIn.text.toString())
+            ed.putString("t_num", trainIn.text.toString())
+
+            val rb = findViewById<RadioButton>(classGroup.checkedRadioButtonId)
+            if (rb != null) ed.putString("sel_cls", rb.text.toString())
+
+            for (i in inputs.indices) {
+                ed.putString("n${i+1}", inputs[i].first.text.toString())
+                ed.putString("a${i+1}", inputs[i].second.text.toString())
+                ed.putString("g${i+1}", inputs[i].third.text.toString().uppercase())
+            }
+
+            ed.apply()
+            Toast.makeText(this, "Saved Successfully!", Toast.LENGTH_SHORT).show()
+        }
+
+        layout.addView(saveBtn)
+
+        // OPEN IRCTC
+        val openBtn = Button(this).apply {
+            text = "Open IRCTC 🚉"
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { setMargins(0, 10, 0, 10) }
+        }
+
+        openBtn.setOnClickListener {
+            val intent = packageManager.getLaunchIntentForPackage("cris.org.in.prs.ima")
+            if (intent != null) startActivity(intent)
+            else Toast.makeText(this, "IRCTC not installed", Toast.LENGTH_SHORT).show()
+        }
+
+        layout.addView(openBtn)
+
+        // ENABLE SERVICE
+        val serviceBtn = Button(this).apply {
+            text = "Enable Service ⚙️"
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { setMargins(0, 10, 0, 20) }
+        }
+
+        serviceBtn.setOnClickListener {
+            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        }
+
+        layout.addView(serviceBtn)
+
+        setContentView(scrollView)
     }
-
-    override fun onInterrupt() {}
 }
