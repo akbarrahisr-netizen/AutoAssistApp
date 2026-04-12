@@ -2,11 +2,16 @@ package com.example.accessibility
 
 import android.accessibilityservice.AccessibilityService
 import android.content.Context
+import android.graphics.PixelFormat
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.view.Gravity
+import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.widget.TextView
+import android.graphics.Color
 import java.util.Calendar
 
 class MyAccessibilityService : AccessibilityService() {
@@ -14,26 +19,65 @@ class MyAccessibilityService : AccessibilityService() {
     private var pIdx = 1
     private val handler = Handler(Looper.getMainLooper())
     private var lastTrigger = ""
+    private var floatingStatus: TextView? = null
 
     override fun onServiceConnected() {
         super.onServiceConnected()
-        // टाइमर: बॉक्स वाले टाइम पर तुरंत एक्शन
+        showFloatingStatus() // स्क्रीन पर निशान और घड़ी दिखाना
+
         handler.postDelayed(object : Runnable {
             override fun run() {
                 val prefs = getSharedPreferences("AutoData", Context.MODE_PRIVATE)
                 val target = prefs.getString("t_time", "10:59:59") ?: "10:59:59"
-                val now = String.format("%02d:%02d:%02d", Calendar.getInstance().get(Calendar.HOUR_OF_DAY), Calendar.getInstance().get(Calendar.MINUTE), Calendar.getInstance().get(Calendar.SECOND))
+                
+                // वर्तमान समय सेकंड के साथ (HH:mm:ss)
+                val cal = Calendar.getInstance()
+                val now = String.format("%02d:%02d:%02d", 
+                    cal.get(Calendar.HOUR_OF_DAY), 
+                    cal.get(Calendar.MINUTE), 
+                    cal.get(Calendar.SECOND))
 
+                // स्क्रीन पर चल रही घड़ी को अपडेट करना
+                floatingStatus?.text = "AutoAssist: $now" 
+
+                // अगर टाइम मैच हो गया तो रिफ्रेश दबाओ
                 if (now == target && lastTrigger != now) {
                     val root = rootInActiveWindow
                     if (root?.packageName?.toString()?.contains("irctc") == true) {
                         if (!click(root, "Refresh")) click(root, "Updated")
                         lastTrigger = now
+                        floatingStatus?.setBackgroundColor(Color.RED) // रिफ्रेश होते ही लाल रंग
+                        floatingStatus?.text = "Refreshing..."
                     }
+                } else if (now != target) {
+                    floatingStatus?.setBackgroundColor(Color.parseColor("#CC000000")) // सामान्य काला रंग
                 }
-                handler.postDelayed(this, 100)
+                
+                handler.postDelayed(this, 500) // हर आधे सेकंड में टाइम अपडेट करो
             }
-        }, 100)
+        }, 500)
+    }
+
+    private fun showFloatingStatus() {
+        val wm = getSystemService(WINDOW_SERVICE) as WindowManager
+        floatingStatus = TextView(this).apply {
+            text = "AutoAssist: Loading..."
+            setBackgroundColor(Color.parseColor("#CC000000")) // पारदर्शी काला
+            setTextColor(Color.WHITE)
+            setPadding(25, 12, 25, 12)
+            textSize = 14f
+        }
+
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            PixelFormat.TRANSLUCENT
+        )
+        params.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+        params.y = 50 // स्क्रीन से थोड़ा नीचे
+        wm.addView(floatingStatus, params)
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -42,15 +86,14 @@ class MyAccessibilityService : AccessibilityService() {
 
         val prefs = getSharedPreferences("AutoData", Context.MODE_PRIVATE)
         val tNum = prefs.getString("t_num", "") ?: ""
-        val cls = prefs.getString("sel_cls", "SL") ?: "SL"
+        val selCls = prefs.getString("sel_cls", "SL") ?: "SL"
 
-        // 1. ट्रेन कार्ड ढूँढना और क्लास दबाना
+        // ट्रेन ढूँढना और क्लिक करना
         val train = find(root, tNum)
         if (train != null) {
             val card = findCard(train)
             if (card != null) {
-                click(card, cls) // क्लास (SL/3A) दबाया
-                // अगर AVL/AVAILABLE दिखा, तो PASSENGER DETAILS दबाओ
+                click(card, selCls)
                 if (find(card, "AVL") != null || find(card, "AVAILABLE") != null) {
                     click(root, "PASSENGER DETAILS")
                 }
@@ -59,13 +102,16 @@ class MyAccessibilityService : AccessibilityService() {
             root.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
         }
 
-        // 2. पैसेंजर फॉर्म (Zero Delay)
         click(root, "OK")
+        fillForm(root, prefs)
+    }
+
+    private fun fillForm(root: AccessibilityNodeInfo, prefs: android.content.SharedPreferences) {
         val edits = mutableListOf<AccessibilityNodeInfo>()
         getEdits(root, edits)
         val total = (1..6).count { !prefs.getString("n$it", "").isNullOrEmpty() }
 
-        if (edits.size >= 2 && edits[0].text.isNullOrEmpty()) {
+        if (edits.size >= 2 && (edits[0].text == null || edits[0].text.isEmpty())) {
             val n = prefs.getString("n$pIdx", "") ?: ""
             val a = prefs.getString("a$pIdx", "") ?: ""
             val g = if (prefs.getString("g$pIdx", "M")?.uppercase() == "F") "Female" else "Male"
@@ -94,10 +140,7 @@ class MyAccessibilityService : AccessibilityService() {
 
     private fun click(r: AccessibilityNodeInfo?, t: String): Boolean {
         val ns = r?.findAccessibilityNodeInfosByText(t) ?: return false
-        ns.forEach { 
-            it.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-            it.parent?.performAction(AccessibilityNodeInfo.ACTION_CLICK) // बॉक्स क्लिक के लिए ज़रूरी
-        }
+        ns.forEach { it.performAction(AccessibilityNodeInfo.ACTION_CLICK); it.parent?.performAction(AccessibilityNodeInfo.ACTION_CLICK) }
         return ns.isNotEmpty()
     }
 
@@ -105,13 +148,10 @@ class MyAccessibilityService : AccessibilityService() {
 
     private fun findCard(n: AccessibilityNodeInfo): AccessibilityNodeInfo? {
         var p: AccessibilityNodeInfo? = n
-        while (p?.parent != null) { 
-            p = p.parent
-            // अगर इस डिब्बे में Refresh या SL जैसा कुछ है, तो यही ट्रेन कार्ड है
-            if (p?.findAccessibilityNodeInfosByText("Refresh")?.isNotEmpty() == true) return p
-        }
+        while (p?.parent != null) { p = p.parent; if (p?.findAccessibilityNodeInfosByText("Refresh")?.isNotEmpty() == true) return p }
         return null
     }
 
     override fun onInterrupt() {}
 }
+
