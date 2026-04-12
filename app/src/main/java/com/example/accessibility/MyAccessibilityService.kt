@@ -1,14 +1,17 @@
-package com.example.aare.v24
+package com.example.aare.v26
 
 import android.accessibilityservice.AccessibilityService
-import android.accessibilityservice.AccessibilityEvent
+import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.graphics.Rect
 import kotlinx.coroutines.*
+import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.ln
+import kotlin.random.Random
 
 /* =========================================================
-   🛡️ SAFETY GUARD
+   🧬 GROUND SAFETY LAYER
 ========================================================= */
 
 class SafetyGuard {
@@ -19,7 +22,6 @@ class SafetyGuard {
         val key = "$state#$action"
         val now = System.currentTimeMillis()
         val last = cooldown[key] ?: 0L
-
         if (now - last < WINDOW) return false
         cooldown[key] = now
         return true
@@ -27,31 +29,40 @@ class SafetyGuard {
 }
 
 /* =========================================================
-   🧬 WORLD MODEL
+   🧠 COMPRESSED WORLD MODEL (NO GRAPH EXPLOSION)
 ========================================================= */
 
+data class Edge(val action: String, val to: String, var weight: Float)
+
 class WorldModel {
-    private val graph = ConcurrentHashMap<String, MutableList<Triple<String, String, Float>>>()
+
+    private val memory = ConcurrentHashMap<String, MutableList<Edge>>()
+    private val MAX_BUCKETS = 2000
 
     fun record(from: String, action: String, to: String) {
-        val list = graph.getOrPut(from) { mutableListOf() }
-        val existing = list.find { it.first == action && it.second == to }
+        val key = compress(from)
 
-        if (existing != null) {
-            list.remove(existing)
-            list.add(Triple(action, to, existing.third + 0.1f))
-        } else {
-            list.add(Triple(action, to, 1f))
+        if (memory.size > MAX_BUCKETS && !memory.containsKey(key)) {
+            val oldest = memory.keys.firstOrNull()
+            if (oldest != null) memory.remove(oldest)
         }
+
+        val list = memory.getOrPut(key) { mutableListOf() }
+
+        val existing = list.find { it.action == action && it.to == to }
+        if (existing != null) existing.weight += 0.1f
+        else list.add(Edge(action, to, 1f))
     }
 
-    fun get(from: String): List<Triple<String, String, Float>> {
-        return graph[from] ?: emptyList()
+    fun get(state: String): List<Edge> {
+        return memory[compress(state)] ?: emptyList()
     }
+
+    private fun compress(s: String): String = s.take(32)
 }
 
 /* =========================================================
-   👁️ FINGERPRINT
+   👁️ STABLE FINGERPRINT
 ========================================================= */
 
 class StructuralFingerprint {
@@ -61,55 +72,64 @@ class StructuralFingerprint {
 
         val sb = StringBuilder()
         walk(root, sb)
-        return sb.toString().hashCode().toString()
+
+        return sha256(sb.toString())
     }
 
     private fun walk(node: AccessibilityNodeInfo?, sb: StringBuilder) {
         if (node == null || !node.isVisibleToUser) return
 
+        val r = Rect()
+        node.getBoundsInScreen(r)
+
         sb.append(node.className)
         sb.append(node.text ?: "")
         sb.append(node.isClickable)
+        sb.append(r.flattenToString())
 
         for (i in 0 until node.childCount) {
             walk(node.getChild(i), sb)
         }
     }
+
+    private fun sha256(input: String): String {
+        val md = MessageDigest.getInstance("SHA-256")
+        return md.digest(input.toByteArray()).joinToString("") { "%02x".format(it) }
+    }
 }
 
 /* =========================================================
-   🔮 PREDICTOR (SAFE ENTROPY)
+   🔮 ENTROPY ENGINE (REAL DYNAMIC UNCERTAINTY)
 ========================================================= */
 
 class Predictor(private val world: WorldModel) {
 
     fun entropy(state: String): Float {
-        val transitions = world.get(state)
-        if (transitions.isEmpty()) return 1f   // ✅ FIX: no crash
+        val edges = world.get(state)
+        if (edges.isEmpty()) return 0.9f
 
-        val total = transitions.sumOf { it.third.toDouble() }
-        if (total <= 0.0) return 1f            // ✅ FIX: zero safety
+        val sum = edges.sumOf { it.weight.toDouble() }
+        if (sum <= 0) return 0.9f
 
         var h = 0.0
-
-        for (t in transitions) {
-            val p = t.third / total
+        for (e in edges) {
+            val p = e.weight / sum
             if (p > 0) h -= p * ln(p)
         }
 
-        return h.toFloat()
+        return h.toFloat().coerceIn(0f, 1f)
     }
 
     fun predict(state: String, action: String): String {
         return world.get(state)
-            .filter { it.first == action }
-            .maxByOrNull { it.third }
-            ?.second ?: "UNKNOWN"
+            .filter { it.action == action }
+            .maxByOrNull { it.weight }
+            ?.to ?: "UNKNOWN"
     }
 }
 
 /* =========================================================
-   🎯 ACTION SCANNER
+   🎯 ACTION SPACE
 ========================================================= */
 
 class ActionScanner {
@@ -123,7 +143,9 @@ class ActionScanner {
     private fun dfs(node: AccessibilityNodeInfo?, list: MutableList<AccessibilityNodeInfo>) {
         if (node == null || !node.isVisibleToUser) return
 
-        if (node.isClickable) list.add(node)
+        if (node.isClickable && node.isEnabled) {
+            list.add(node)
+        }
 
         for (i in 0 until node.childCount) {
             dfs(node.getChild(i), list)
@@ -132,18 +154,23 @@ class ActionScanner {
 }
 
 /* =========================================================
-   🚀 SERVICE (FIXED TIMING + CORRECT MEMORY WRITE)
+   🚀 AARE v26 CORE SERVICE (GROUND-BASED DECISION ENGINE)
 ========================================================= */
 
-class AAREv24Service : AccessibilityService() {
+class AAREv26Service : AccessibilityService() {
 
     private val world = WorldModel()
     private val predictor = Predictor(world)
-    private val scanner = ActionScanner()
-    private val safety = SafetyGuard()
     private val fp = StructuralFingerprint()
+    private val safety = SafetyGuard()
+    private val scanner = ActionScanner()
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private lateinit var scope: CoroutineScope
+
+    override fun onServiceConnected() {
+        super.onServiceConnected()
+        scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         val root = rootInActiveWindow ?: return
@@ -153,32 +180,50 @@ class AAREv24Service : AccessibilityService() {
             val state = fp.hash(root)
             val candidates = scanner.scan(root)
 
-            val target = candidates.firstOrNull() ?: return@launch
-            val action = "CLICK"
+            if (candidates.isEmpty()) return@launch
 
-            if (!safety.allow(state, action)) return@launch
+            val scored = candidates.map { node ->
+                val key = node.text?.toString() ?: node.className.toString()
+                val next = predictor.predict(state, key)
+                val uncertainty = predictor.entropy(next)
+
+                val exploration = Random.nextFloat() * 0.15f
+
+                node to ((1f - uncertainty) + exploration)
+            }
+
+            val best = scored.maxByOrNull { it.second }?.first ?: return@launch
+
+            val actionKey = best.text?.toString() ?: best.className.toString()
+
+            if (!safety.allow(state, actionKey)) return@launch
 
             val success = withContext(Dispatchers.Main) {
                 try {
-                    target.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    best.performAction(AccessibilityNodeInfo.ACTION_CLICK)
                 } catch (e: Exception) {
                     false
                 }
             }
 
-            // ✅ FIX 1: WAIT FOR UI SETTLE (critical)
-            delay(650)
+            if (success) {
+                delay(650)
 
-            // ✅ FIX 2: CAPTURE NEW STATE AFTER TRANSITION
-            val newRoot = rootInActiveWindow
-            val newState = fp.hash(newRoot)
-
-            // ✅ SAFE MEMORY UPDATE (correct timing)
-            world.record(state, action, newState)
+                val newRoot = rootInActiveWindow
+                if (newRoot != null) {
+                    val nextState = fp.hash(newRoot)
+                    world.record(state, actionKey, nextState)
+                }
+            }
         }
     }
 
     override fun onInterrupt() {
-        scope.cancel()
+        if (::scope.isInitialized) scope.cancel()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        if (::scope.isInitialized) scope.cancel()
     }
 }
