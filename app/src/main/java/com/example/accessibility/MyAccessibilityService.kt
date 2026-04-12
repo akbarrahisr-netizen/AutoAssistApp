@@ -1,138 +1,275 @@
 package com.example.accessibility
 
 import android.accessibilityservice.AccessibilityService
-import android.content.Context
+import android.content.*
 import android.graphics.PixelFormat
-import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
-import android.view.Gravity
-import android.view.WindowManager
-import android.view.accessibility.AccessibilityEvent
-import android.view.accessibility.AccessibilityNodeInfo
+import android.os.*
+import android.view.*
+import android.view.accessibility.*
 import android.widget.TextView
 import android.graphics.Color
-import java.util.Calendar
+import java.util.*
 
 class MyAccessibilityService : AccessibilityService() {
-    private var floatingStatus: TextView? = null
+
     private val handler = Handler(Looper.getMainLooper())
-    private var lastT = ""
+    private var floatingStatus: TextView? = null
+
+    private var step = 0
     private var pIdx = 1
+    private var avlFound = false
+    private var sniperActive = false
+
+    private var lastActionTime = System.currentTimeMillis()
+    private var lastTriggerMinute = ""
+    private var lastClickTime = 0L
+    private var scrollCount = 0
+
+    // 🔥 SMART DELAY
+    private fun getDelay(base: Long) = base + (40..120).random()
+
+    // 🔥 WATCHDOG (Freeze Recovery)
+    private val watchdog = object : Runnable {
+        override fun run() {
+            val now = System.currentTimeMillis()
+            if (sniperActive && (now - lastActionTime > 4000)) {
+                resetAll("Auto Reset 🛡️")
+            }
+            handler.postDelayed(this, 2000)
+        }
+    }
+
+    // 🔥 SNIPER LOOP
+    private val sniperTask = object : Runnable {
+        override fun run() {
+            val root = rootInActiveWindow
+            if (root != null && root.packageName.toString().contains("irctc")) {
+                if (!avlFound && step <= 1) {
+                    smartClick(root, "Refresh")
+                    smartClick(root, "Updated")
+                    lastActionTime = System.currentTimeMillis()
+                }
+            }
+            handler.postDelayed(this, 350)
+        }
+    }
 
     override fun onServiceConnected() {
         super.onServiceConnected()
-        showFloatingStatus()
+        showFloating()
+        handler.post(watchdog)
+
         handler.postDelayed(object : Runnable {
             override fun run() {
-                val prefs = getSharedPreferences("AutoData", Context.MODE_PRIVATE)
+                val prefs = getSharedPreferences("AutoData", MODE_PRIVATE)
                 val target = prefs.getString("t_time", "11:00:00") ?: "11:00:00"
-                val now = String.format("%02d:%02d:%02d", Calendar.getInstance().get(Calendar.HOUR_OF_DAY), Calendar.getInstance().get(Calendar.MINUTE), Calendar.getInstance().get(Calendar.SECOND))
-                floatingStatus?.text = "Time: $now | Status: Hunting"
-                if (now == target && lastT != now) {
-                    val root = rootInActiveWindow
-                    if (root?.packageName?.contains("irctc") == true) {
-                        clickAction(root, "Refresh")
-                        clickAction(root, "Updated")
-                        lastT = now
-                    }
+                val now = currentTime()
+
+                val currentMinute = now.substring(0,5)
+
+                if (currentMinute == target.substring(0,5) && lastTriggerMinute != currentMinute) {
+                    lastTriggerMinute = currentMinute
+                    sniperActive = true
+                    avlFound = false
+                    step = 0
+                    scrollCount = 0
+
+                    handler.post(sniperTask)
+                    showFloatingStatus("🔥 SNIPER ACTIVE")
                 }
-                handler.postDelayed(this, 100) 
+
+                handler.postDelayed(this, 200)
             }
-        }, 100)
+        }, 200)
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        if (event == null) return
+
+        if (event.eventType != AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED &&
+            event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
+
         val root = rootInActiveWindow ?: return
         if (!root.packageName.toString().contains("irctc")) return
 
-        val prefs = getSharedPreferences("AutoData", Context.MODE_PRIVATE)
-        val tNum = prefs.getString("t_num", "") ?: ""
-        val selCls = prefs.getString("sel_cls", "SL") ?: "SL"
-        val userDelay = prefs.getString("c_delay", "0")?.toLong() ?: 0L
+        val prefs = getSharedPreferences("AutoData", MODE_PRIVATE)
+        val delay = getDelay((prefs.getString("c_delay", "250") ?: "250").toLong())
+        val trainNum = prefs.getString("t_num", "") ?: ""
 
-        // 1. सही ट्रेन ढूँढो
-        val trainNode = root.findAccessibilityNodeInfosByText(tNum).firstOrNull()
-        if (trainNode != null) {
-            // उस ट्रेन के कार्ड के अंदर क्लास दबाओ
-            val card = findCard(trainNode)
-            clickAction(card ?: root, selCls)
+        when (step) {
+            0 -> findTrain(root, trainNum, prefs, delay)
+            1 -> handleAVL(root, delay)
+            2 -> fillForm(root, prefs, delay)
+        }
+    }
 
-            // 2. हरे रंग (AVL) की जाँच और पैसेंजर बटन क्लिक
+    private fun findTrain(root: AccessibilityNodeInfo, trainNum: String, prefs: SharedPreferences, delay: Long) {
+        if (!isTrainPresent(root, trainNum)) {
+            if (scrollCount < 8) {
+                smartScroll(root)
+                scrollCount++
+            }
+            return
+        }
+
+        val cls = prefs.getString("sel_cls", "SL") ?: "SL"
+        if (smartClick(root, cls)) {
+            step = 1
+            scrollCount = 0
+            lastActionTime = System.currentTimeMillis()
+        }
+    }
+
+    private fun handleAVL(root: AccessibilityNodeInfo, delay: Long) {
+        if (!avlFound && isAvailable(root)) {
+            avlFound = true
+            handler.removeCallbacks(sniperTask)
+
+            retryInfinite {
+                val r = rootInActiveWindow ?: return@retryInfinite false
+                if (smartClick(r, "PASSENGER DETAILS")) {
+                    step = 2
+                    showFloatingStatus("🎯 SEAT LOCKED")
+                    true
+                } else false
+            }
+        }
+    }
+
+    private fun fillForm(root: AccessibilityNodeInfo, prefs: SharedPreferences, delay: Long) {
+        smartClick(root, "OK")
+
+        val edits = getEdits(root)
+        if (edits.size < 2) return
+
+        val total = (1..6).count { !(prefs.getString("n$it", "") ?: "").isEmpty() }
+
+        if (edits[0].text.isNullOrEmpty()) {
+            val name = prefs.getString("n$pIdx", "") ?: ""
+            val age = prefs.getString("a$pIdx", "") ?: ""
+            val gender = if (prefs.getString("g$pIdx", "M") == "F") "Female" else "Male"
+
+            input(edits[0], name)
+            input(edits[1], age)
+
             handler.postDelayed({
-                val isAvl = findNode(root, "AVL") != null || findNode(root, "AVAILABLE") != null
-                if (isAvl) {
-                    clickAction(root, "PASSENGER DETAILS")
+                val r = rootInActiveWindow ?: return@postDelayed
+                if (smartClick(r, gender)) {
+                    handler.postDelayed({
+                        val r2 = rootInActiveWindow ?: return@postDelayed
+                        if (System.currentTimeMillis() - lastClickTime > 500) {
+                            if (smartClick(r2, "Add Passenger")) {
+                                pIdx++
+                                lastClickTime = System.currentTimeMillis()
+                            }
+                        }
+                    }, delay)
                 }
-            }, userDelay)
-        } else {
-            root.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
-        }
+            }, delay)
 
-        clickAction(root, "OK")
-        fillForm(root, prefs, userDelay)
-    }
-
-    private fun fillForm(root: AccessibilityNodeInfo, prefs: android.content.SharedPreferences, delay: Long) {
-        val edits = mutableListOf<AccessibilityNodeInfo>()
-        getEdits(root, edits)
-        val total = (1..6).count { !prefs.getString("n$it", "").isNullOrEmpty() }
-
-        if (edits.size >= 2 && (edits[0].text == null || edits[0].text.isEmpty())) {
-            val n = prefs.getString("n$pIdx", "") ?: ""
-            val a = prefs.getString("a$pIdx", "") ?: ""
-            val g = if (prefs.getString("g$pIdx", "M")?.uppercase() == "F") "Female" else "Male"
-            if (n.isNotEmpty()) {
-                input(edits[0], n)
-                input(edits[1], a)
-                clickAction(root, g)
-                handler.postDelayed({ clickAction(root, "Add Passenger"); pIdx++ }, delay)
-            }
-        } else if (pIdx > total && total > 0) {
-            clickAction(root, "REVIEW JOURNEY DETAILS")
-            if (findNode(root, "Payment") != null) pIdx = 1
-        } else {
-            clickAction(root, "+ Add New")
-        }
-    }
-
-    private fun clickAction(root: AccessibilityNodeInfo?, text: String) {
-        val nodes = root?.findAccessibilityNodeInfosByText(text) ?: return
-        for (node in nodes) {
-            var temp: AccessibilityNodeInfo? = node
-            while (temp != null) {
-                if (temp.isClickable) { temp.performAction(AccessibilityNodeInfo.ACTION_CLICK); return }
-                temp = temp.parent
+        } else if (pIdx > total) {
+            if (smartClick(root, "REVIEW JOURNEY DETAILS")) {
+                resetAll("Done ✅")
             }
         }
     }
 
-    private fun findCard(n: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-        var p: AccessibilityNodeInfo? = n
-        while (p?.parent != null) {
-            p = p.parent
-            if (p?.findAccessibilityNodeInfosByText("Refresh")?.isNotEmpty() == true) return p
+    // 🔧 TOOLS
+
+    private fun retryInfinite(action: () -> Boolean) {
+        if (!action()) {
+            handler.postDelayed({ retryInfinite(action) }, 180)
         }
-        return null
     }
 
-    private fun findNode(root: AccessibilityNodeInfo, text: String) = root.findAccessibilityNodeInfosByText(text).firstOrNull()
+    private fun isTrainPresent(root: AccessibilityNodeInfo, trainNum: String): Boolean {
+        return root.findAccessibilityNodeInfosByText(trainNum).isNotEmpty()
+    }
+
+    private fun isAvailable(root: AccessibilityNodeInfo): Boolean {
+        return root.findAccessibilityNodeInfosByText("AVL").isNotEmpty() ||
+               root.findAccessibilityNodeInfosByText("AVAILABLE").isNotEmpty()
+    }
+
+    private fun smartClick(root: AccessibilityNodeInfo?, text: String): Boolean {
+        val nodes = root?.findAccessibilityNodeInfosByText(text) ?: return false
+        for (n in nodes) {
+            var p: AccessibilityNodeInfo? = n
+            repeat(5) {
+                if (p?.isClickable == true) {
+                    p.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    return true
+                }
+                p = p?.parent
+            }
+        }
+        return false
+    }
+
     private fun input(node: AccessibilityNodeInfo, text: String) {
-        val b = Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text) }
+        val b = Bundle()
+        b.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
         node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, b)
     }
-    private fun getEdits(n: AccessibilityNodeInfo?, l: MutableList<AccessibilityNodeInfo>) {
-        if (n == null) return
-        if (n.className == "android.widget.EditText") l.add(n)
-        for (i in 0 until n.childCount) getEdits(n.getChild(i), l)
+
+    private fun smartScroll(root: AccessibilityNodeInfo) {
+        if (root.isScrollable) {
+            root.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
+        }
     }
-    private fun showFloatingStatus() {
-        val wm = getSystemService(WINDOW_SERVICE) as WindowManager
-        floatingStatus = TextView(this).apply { setBackgroundColor(Color.parseColor("#CC000000")); setTextColor(Color.WHITE); setPadding(20, 10, 20, 10) }
-        val params = WindowManager.LayoutParams(WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY, WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE, PixelFormat.TRANSLUCENT)
-        params.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-        params.y = 80
-        try { wm.addView(floatingStatus, params) } catch (e: Exception) {}
+
+    private fun getEdits(root: AccessibilityNodeInfo): List<AccessibilityNodeInfo> {
+        val list = mutableListOf<AccessibilityNodeInfo>()
+        fun scan(n: AccessibilityNodeInfo?) {
+            if (n == null) return
+            if (n.className == "android.widget.EditText") list.add(n)
+            for (i in 0 until n.childCount) scan(n.getChild(i))
+        }
+        scan(root)
+        return list
     }
+
+    private fun resetAll(msg: String) {
+        handler.removeCallbacks(sniperTask)
+        step = 0
+        pIdx = 1
+        avlFound = false
+        sniperActive = false
+        scrollCount = 0
+        showFloatingStatus(msg)
+    }
+
+    private fun currentTime(): String {
+        val c = Calendar.getInstance()
+        return String.format("%02d:%02d:%02d",
+            c.get(Calendar.HOUR_OF_DAY),
+            c.get(Calendar.MINUTE),
+            c.get(Calendar.SECOND))
+    }
+
+    private fun showFloating() {
+        try {
+            val wm = getSystemService(WINDOW_SERVICE) as WindowManager
+            floatingStatus = TextView(this).apply {
+                setBackgroundColor(Color.BLACK)
+                setTextColor(Color.WHITE)
+                setPadding(20,10,20,10)
+            }
+            val params = WindowManager.LayoutParams(
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                PixelFormat.TRANSLUCENT
+            )
+            params.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            wm.addView(floatingStatus, params)
+        } catch (e: Exception) {}
+    }
+
+    private fun showFloatingStatus(text: String) {
+        floatingStatus?.text = text
+    }
+
     override fun onInterrupt() {}
 }
