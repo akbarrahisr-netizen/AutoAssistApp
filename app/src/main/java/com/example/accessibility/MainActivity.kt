@@ -1,79 +1,218 @@
 package com.example.accessibility
 
-import android.app.Activity
-import android.content.Context
-import android.os.Bundle
-import android.widget.*
-import android.view.ViewGroup
-import android.widget.LinearLayout
+import android.accessibilityservice.AccessibilityService
+import android.content.*
+import android.graphics.PixelFormat
+import android.os.*
+import android.view.*
+import android.view.accessibility.*
+import android.widget.TextView
 import android.graphics.Color
+import java.util.*
 
-class MainActivity : Activity() {
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        val prefs = getSharedPreferences("AutoData", Context.MODE_PRIVATE)
-        val scrollView = ScrollView(this)
-        val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(30, 30, 30, 30) }
-        scrollView.addView(layout)
+// 1. स्मार्ट एक्शन मॉडल
+data class ActionStep(val name: String, val action: () -> Boolean, val retry: Int = 3)
 
-        layout.addView(TextView(this).apply { text = "ऑटो रिफ्रेश टाइम (HH:mm:ss):"; setTextColor(Color.RED) })
-        val timeIn = EditText(this).apply { hint = "11:59:59"; setText(prefs.getString("t_time", "11:59:59")) }
-        layout.addView(timeIn)
+class UltimateAccessibilityService : AccessibilityService() {
 
-        layout.addView(TextView(this).apply { text = "\nट्रेन नंबर:"; setTextColor(Color.BLUE) })
-        val trainIn = EditText(this).apply { hint = "12488"; inputType = 2; setText(prefs.getString("t_num", "")) }
-        layout.addView(trainIn)
+    private val handler = Handler(Looper.getMainLooper())
+    private var floatingStatus: TextView? = null
+    private var currentStep = 0
+    private var pIndex = 1
+    private var lastTrigger = ""
+    
+    // एक्शन क्यू (Queue) - यहाँ स्टेप्स स्टोर होंगे
+    private var actionQueue = mutableListOf<ActionStep>()
 
-        layout.addView(TextView(this).apply { text = "\nक्लिक डिले (ms):"; setTextColor(Color.BLACK) })
-        val delayIn = EditText(this).apply { hint = "0"; inputType = 2; setText(prefs.getString("c_delay", "200")) }
-        layout.addView(delayIn)
+    override fun onServiceConnected() {
+        super.onServiceConnected()
+        showFloating()
 
-        // रेडियो ग्रुप फिक्स
-        layout.addView(TextView(this).apply { text = "\nक्लास चुनें:" })
-        val radioGroup = RadioGroup(this)
-        val classes = listOf("SL", "3A", "2A", "3E")
-        val savedCls = prefs.getString("sel_cls", "SL")
-        
-        classes.forEachIndexed { index, cls ->
-            val rb = RadioButton(this).apply { 
-                text = cls
-                id = index + 100 // अलग ID देना ज़रूरी है
-                if (cls == savedCls) isChecked = true 
+        // रिफ्रेश वॉचडॉग (Watchdog)
+        handler.postDelayed(object : Runnable {
+            override fun run() {
+                val prefs = getSharedPreferences("AutoData", MODE_PRIVATE)
+                val target = prefs.getString("t_time", "11:00:00")!!
+                val now = currentTime()
+
+                floatingStatus?.text = "Time: $now | Step: $currentStep"
+
+                if (now == target && lastTrigger != now) {
+                    resetAndStart()
+                    lastTrigger = now
+                }
+                handler.postDelayed(this, 100)
             }
-            radioGroup.addView(rb)
-        }
-        layout.addView(radioGroup)
-
-        val inputs = mutableListOf<Triple<EditText, EditText, EditText>>()
-        for (i in 1..6) {
-            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-            val n = EditText(this).apply { hint = "नाम $i"; layoutParams = LinearLayout.LayoutParams(0, -2, 2f); setText(prefs.getString("n$i", "")) }
-            val a = EditText(this).apply { hint = "उम्र"; layoutParams = LinearLayout.LayoutParams(0, -2, 1f); inputType = 2; setText(prefs.getString("a$i", "")) }
-            val g = EditText(this).apply { hint = "M/F"; layoutParams = LinearLayout.LayoutParams(0, -2, 0.8f); setText(prefs.getString("g$i", "")) }
-            row.addView(n); row.addView(a); row.addView(g); layout.addView(row)
-            inputs.add(Triple(n, a, g))
-        }
-
-        val saveBtn = Button(this).apply { text = "डाटा सेव करें ✅"; setBackgroundColor(Color.GREEN) }
-        saveBtn.setOnClickListener {
-            val ed = prefs.edit()
-            ed.putString("t_time", timeIn.text.toString())
-            ed.putString("t_num", trainIn.text.toString())
-            ed.putString("c_delay", delayIn.text.toString())
-            val checkedId = radioGroup.checkedRadioButtonId
-            if (checkedId != -1) {
-                val rb = findViewById<RadioButton>(checkedId)
-                ed.putString("sel_cls", rb.text.toString())
-            }
-            for (i in 0..5) {
-                ed.putString("n${i+1}", inputs[i].first.text.toString())
-                ed.putString("a${i+1}", inputs[i].second.text.toString())
-                ed.putString("g${i+1}", inputs[i].third.text.toString())
-            }
-            ed.apply()
-            Toast.makeText(this, "डाटा सेव हो गया!", Toast.LENGTH_SHORT).show()
-        }
-        layout.addView(saveBtn)
-        setContentView(scrollView)
+        }, 100)
     }
+
+    private fun resetAndStart() {
+        val root = rootInActiveWindow ?: return
+        clickAction(root, "Refresh")
+        clickAction(root, "Updated")
+        currentStep = 0
+        pIndex = 1
+    }
+
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        // ✅ EVENT FILTER: सिर्फ ज़रूरी इवेंट्स पकड़ो
+        if (event?.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
+            event?.eventType != AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) return
+
+        val root = rootInActiveWindow ?: return
+        if (!root.packageName.toString().contains("irctc")) return
+
+        val prefs = getSharedPreferences("AutoData", MODE_PRIVATE)
+        val delay = prefs.getString("c_delay", "200")?.toLong() ?: 200L
+
+        // --- मास्टर लॉजिक इंजन ---
+        executeMasterFlow(root, prefs, delay)
+    }
+
+    private fun executeMasterFlow(root: AccessibilityNodeInfo, prefs: SharedPreferences, delay: Long) {
+        val tNum = prefs.getString("t_num", "")!!
+        val cls = prefs.getString("sel_cls", "SL")!!
+
+        when (currentStep) {
+            0 -> { // ट्रेन और क्लास हंटर
+                val trainNode = root.findAccessibilityNodeInfosByText(tNum).firstOrNull()
+                if (trainNode != null) {
+                    val card = findParentCard(trainNode)
+                    if (clickAction(card ?: root, cls)) {
+                        handler.postDelayed({ currentStep = 1 }, delay)
+                    }
+                } else if (root.isScrollable) {
+                    root.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
+                }
+            }
+
+            1 -> { // AVL और पैसेंजर डिटेल्स (Smart Wait)
+                if (isAvailable(root)) {
+                    handler.postDelayed({
+                        if (clickAction(rootInActiveWindow ?: root, "PASSENGER DETAILS")) {
+                            currentStep = 2
+                        }
+                    }, delay)
+                }
+            }
+
+            2 -> { // पॉप-अप क्लोजर और फॉर्म फिलिंग
+                clickAction(root, "OK")
+                fillFormUltimate(root, prefs, delay)
+            }
+        }
+    }
+
+    private fun fillFormUltimate(root: AccessibilityNodeInfo, prefs: SharedPreferences, delay: Long) {
+        val edits = getEdits(root)
+        val total = (1..6).count { !prefs.getString("n$it", "").isNullOrEmpty() }
+
+        if (edits.size >= 2 && edits[0].text.isNullOrEmpty()) {
+            val name = prefs.getString("n$pIndex", "")!!
+            val age = prefs.getString("a$pIndex", "")!!
+            val gender = if (prefs.getString("g$pIndex", "M") == "F") "Female" else "Male"
+
+            if (name.isNotEmpty()) {
+                input(edits[0], name)
+                input(edits[1], age)
+
+                handler.postDelayed({
+                    val r = rootInActiveWindow ?: return@postDelayed
+                    // जेंडर क्लिक (Smart Parent Logic)
+                    if (clickAction(r, gender)) {
+                        handler.postDelayed({
+                            val r2 = rootInActiveWindow ?: return@postDelayed
+                            if (clickAction(r2, "Add Passenger") || clickAction(r2, "ADD PASSENGER")) {
+                                pIndex++
+                                // यहाँ हम स्टेप 2 पर ही रहेंगे ताकि अगला पैसेंजर भरे
+                            }
+                        }, delay)
+                    }
+                }, delay)
+            }
+        } else if (pIndex > total && total > 0) {
+            if (clickAction(root, "REVIEW JOURNEY DETAILS")) {
+                // सफल होने पर अगले दिन के लिए रेडी
+                handler.postDelayed({ currentStep = 3 }, 1000)
+            }
+        } else {
+            clickAction(root, "Add New")
+            clickAction(root, "ADD NEW")
+        }
+    }
+
+    // --- स्मार्ट क्लिक इंजन ---
+    private fun clickAction(root: AccessibilityNodeInfo?, text: String): Boolean {
+        val nodes = root?.findAccessibilityNodeInfosByText(text) ?: return false
+        for (n in nodes) {
+            var p: AccessibilityNodeInfo? = n
+            while (p != null) {
+                if (p.isClickable) {
+                    p.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    return true
+                }
+                p = p.parent
+            }
+        }
+        return false
+    }
+
+    private fun isAvailable(root: AccessibilityNodeInfo): Boolean {
+        val text = root.toString() // पूरी ट्री का टेक्स्ट चेक करें
+        return text.contains("AVL") || text.contains("AVAILABLE")
+    }
+
+    private fun getEdits(root: AccessibilityNodeInfo): List<AccessibilityNodeInfo> {
+        val list = mutableListOf<AccessibilityNodeInfo>()
+        fun tr(n: AccessibilityNodeInfo?) {
+            if (n == null) return
+            if (n.className == "android.widget.EditText") list.add(n)
+            for (i in 0 until n.childCount) tr(n.getChild(i))
+        }
+        tr(root)
+        return list
+    }
+
+    private fun input(node: AccessibilityNodeInfo, text: String) {
+        val b = Bundle()
+        b.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
+        node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, b)
+    }
+
+    private fun currentTime(): String {
+        val c = Calendar.getInstance()
+        return String.format("%02d:%02d:%02d", c.get(Calendar.HOUR_OF_DAY), c.get(Calendar.MINUTE), c.get(Calendar.SECOND))
+    }
+
+    private fun findParentCard(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        var p: AccessibilityNodeInfo? = node
+        while (p?.parent != null) {
+            p = p.parent
+            if (p?.findAccessibilityNodeInfosByText("Refresh")?.isNotEmpty() == true) return p
+        }
+        return null
+    }
+
+    private fun showFloating() {
+        val wm = getSystemService(WINDOW_SERVICE) as WindowManager
+        floatingStatus = TextView(this).apply {
+            setBackgroundColor(Color.parseColor("#EE000000"))
+            setTextColor(Color.WHITE)
+            setPadding(25, 12, 25, 12)
+            textSize = 14f
+        }
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            PixelFormat.TRANSLUCENT
+        )
+        params.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+        params.y = 80
+        try { wm.addView(floatingStatus, params) } catch (_: Exception) {}
+    }
+
+    override fun onInterrupt() {}
 }
+
