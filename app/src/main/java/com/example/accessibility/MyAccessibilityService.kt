@@ -28,17 +28,17 @@ class MyAccessibilityService : AccessibilityService() {
         handler.postDelayed(object : Runnable {
             override fun run() {
                 val prefs = getSharedPreferences("AutoData", Context.MODE_PRIVATE)
-                val target = prefs.getString("t_time", "11:59:59") ?: "11:59:59"
+                val target = prefs.getString("t_time", "11:00:00") ?: "11:00:00"
                 val now = String.format("%02d:%02d:%02d", Calendar.getInstance().get(Calendar.HOUR_OF_DAY), Calendar.getInstance().get(Calendar.MINUTE), Calendar.getInstance().get(Calendar.SECOND))
 
-                floatingStatus?.text = "Time: $now | Status: Ready"
+                floatingStatus?.text = "Time: $now | Status: Hunting"
 
                 if (now == target && lastT != now) {
                     val root = rootInActiveWindow
                     if (root?.packageName?.contains("irctc") == true) {
-                        clickByText(root, "Refresh")
+                        clickAction(root, "Refresh")
+                        clickAction(root, "Updated")
                         lastT = now
-                        floatingStatus?.setBackgroundColor(Color.RED)
                     }
                 }
                 handler.postDelayed(this, 100) 
@@ -55,100 +55,88 @@ class MyAccessibilityService : AccessibilityService() {
         val selCls = prefs.getString("sel_cls", "SL") ?: "SL"
         val userDelay = prefs.getString("c_delay", "0")?.toLong() ?: 0L
 
-        // 1. सही ट्रेन का डिब्बा ढूँढना
-        val trainNode = findNodeByText(root, tNum)
+        // 1. ट्रेन नंबर मिलाएँ
+        val trainNode = findNode(root, tNum)
         if (trainNode != null) {
             val trainCard = findTrainCard(trainNode)
             if (trainCard != null) {
-                // सिर्फ इसी ट्रेन की क्लास पर क्लिक करो
+                // 2. पहले क्लास (SL/3A) पर क्लिक करें
+                clickAction(trainCard, selCls)
+
+                // 3. क्लिक करने के बाद 'AVL' (हरा रंग) ढूँढें
                 handler.postDelayed({
-                    clickByText(trainCard, selCls)
-                    // पैसेंजर डिटेल्स बटन पूरे पेज पर कहीं भी हो सकता है
-                    clickByText(root, "PASSENGER DETAILS")
-                }, userDelay)
+                    val isGreen = findNode(trainCard, "AVL") != null || findNode(trainCard, "AVAILABLE") != null
+                    if (isGreen) {
+                        // 4. हरा दिखा, तो सीधा Passenger Details दबाओ
+                        clickAction(root, "PASSENGER DETAILS")
+                        floatingStatus?.setBackgroundColor(Color.parseColor("#4CAF50"))
+                    }
+                }, userDelay) // आपके बॉक्स वाला डिले यहाँ काम करेगा
             }
         } else {
-            // अगर ट्रेन नहीं दिख रही तो नीचे स्क्रॉल करो
             root.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
         }
 
-        // 2. पॉप-अप और पैसेंजर फॉर्म
-        clickByText(root, "OK")
-        fillPassengerForm(root, prefs, userDelay)
+        clickAction(root, "OK")
+        fillForm(root, prefs, userDelay)
     }
 
-    private fun fillPassengerForm(root: AccessibilityNodeInfo, prefs: android.content.SharedPreferences, delay: Long) {
-        val edits = mutableListOf<AccessibilityNodeInfo>()
-        findEditTexts(root, edits)
-        val total = (1..6).count { !prefs.getString("n$it", "").isNullOrEmpty() }
-
-        if (edits.size >= 2 && (edits[0].text == null || edits[0].text.isEmpty())) {
-            val name = prefs.getString("n$pIdx", "") ?: ""
-            val age = prefs.getString("a$pIdx", "") ?: ""
-            val gender = if (prefs.getString("g$pIdx", "M")?.uppercase() == "F") "Female" else "Male"
-            
-            if (name.isNotEmpty()) {
-                inputText(edits[0], name)
-                inputText(edits[1], age)
-                clickByText(root, gender)
-                handler.postDelayed({ 
-                    clickByText(root, "Add Passenger")
-                    pIdx++ 
-                }, delay)
-            }
-        } else if (pIdx > total && total > 0) {
-            clickByText(root, "REVIEW JOURNEY DETAILS")
-            if (findNodeByText(root, "Payment") != null) pIdx = 1 // रिसेट
-        } else {
-            clickByText(root, "+ Add New")
-        }
-    }
-
-    // --- मददगार फंक्शन्स (Helper Functions) ---
-
-    private fun clickByText(root: AccessibilityNodeInfo?, text: String): Boolean {
-        val nodes = root?.findAccessibilityNodeInfosByText(text) ?: return false
-        for (node in nodes) {
-            if (performClick(node)) return true
-        }
-        return false
-    }
-
-    private fun performClick(node: AccessibilityNodeInfo?): Boolean {
-        var temp = node
-        while (temp != null) {
-            if (temp.isClickable) {
-                temp.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                return true
-            }
-            temp = temp.parent
-        }
-        return false
-    }
-
+    // --- ट्रेन कार्ड ढूँढने का स्मार्ट तरीका ---
     private fun findTrainCard(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-        var p = node
-        while (p.parent != null) {
+        var p: AccessibilityNodeInfo? = node
+        while (p != null && p.parent != null) {
             p = p.parent
-            // IRCTC में ट्रेन का डिब्बा 'Refresh' बटन से पहचाना जाता है
-            if (p.findAccessibilityNodeInfosByText("Refresh").isNotEmpty() || 
-                p.findAccessibilityNodeInfosByText("Updated").isNotEmpty()) return p
+            if (p?.findAccessibilityNodeInfosByText("Refresh")?.isNotEmpty() == true || 
+                p?.findAccessibilityNodeInfosByText("Updated")?.isNotEmpty() == true) return p
         }
         return null
     }
 
-    private fun findNodeByText(root: AccessibilityNodeInfo, text: String) = 
-        root.findAccessibilityNodeInfosByText(text).firstOrNull()
-
-    private fun findEditTexts(n: AccessibilityNodeInfo?, l: MutableList<AccessibilityNodeInfo>) {
-        if (n == null) return
-        if (n.className == "android.widget.EditText") l.add(n)
-        for (i in 0 until n.childCount) findEditTexts(n.getChild(i), l)
+    private fun clickAction(root: AccessibilityNodeInfo?, text: String) {
+        val nodes = root?.findAccessibilityNodeInfosByText(text) ?: return
+        for (node in nodes) {
+            var temp: AccessibilityNodeInfo? = node
+            while (temp != null) {
+                if (temp.isClickable) {
+                    temp.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    return
+                }
+                temp = temp.parent
+            }
+        }
     }
 
-    private fun inputText(node: AccessibilityNodeInfo, text: String) {
-        val b = Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text) }
-        node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, b)
+    private fun fillForm(root: AccessibilityNodeInfo, prefs: android.content.SharedPreferences, delay: Long) {
+        val edits = mutableListOf<AccessibilityNodeInfo>()
+        findEdits(root, edits)
+        val total = (1..6).count { !prefs.getString("n$it", "").isNullOrEmpty() }
+
+        if (edits.size >= 2 && (edits[0].text == null || edits[0].text.isEmpty())) {
+            val n = prefs.getString("n$pIdx", "") ?: ""
+            val a = prefs.getString("a$pIdx", "") ?: ""
+            val g = if (prefs.getString("g$pIdx", "M")?.uppercase() == "F") "Female" else "Male"
+            
+            if (n.isNotEmpty()) {
+                val b1 = Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, n) }
+                edits[0].performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, b1)
+                val b2 = Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, a) }
+                edits[1].performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, b2)
+                clickAction(root, g)
+                handler.postDelayed({ clickAction(root, "Add Passenger"); pIdx++ }, delay)
+            }
+        } else if (pIdx > total && total > 0) {
+            clickAction(root, "REVIEW JOURNEY DETAILS")
+        } else {
+            clickAction(root, "+ Add New")
+        }
+    }
+
+    private fun findNode(root: AccessibilityNodeInfo, text: String) = root.findAccessibilityNodeInfosByText(text).firstOrNull()
+
+    private fun findEdits(n: AccessibilityNodeInfo?, l: MutableList<AccessibilityNodeInfo>) {
+        if (n == null) return
+        if (n.className == "android.widget.EditText") l.add(n)
+        for (i in 0 until n.childCount) findEdits(n.getChild(i), l)
     }
 
     private fun showFloatingStatus() {
@@ -156,8 +144,7 @@ class MyAccessibilityService : AccessibilityService() {
         floatingStatus = TextView(this).apply {
             setBackgroundColor(Color.parseColor("#CC000000"))
             setTextColor(Color.WHITE)
-            setPadding(25, 12, 25, 12)
-            textSize = 14f
+            setPadding(20, 10, 20, 10)
         }
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -173,3 +160,4 @@ class MyAccessibilityService : AccessibilityService() {
 
     override fun onInterrupt() {}
 }
+
