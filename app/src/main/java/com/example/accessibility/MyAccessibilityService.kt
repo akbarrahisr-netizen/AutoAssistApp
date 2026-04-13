@@ -1,203 +1,118 @@
-package com.example.aare.production.safecore
+package com.example.accessibility.safe
 
 import android.accessibilityservice.AccessibilityService
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
-import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
-import java.util.concurrent.ConcurrentHashMap
-import java.util.ArrayDeque
+import android.os.*
+import android.view.*
+import android.graphics.*
+import android.widget.TextView
+import java.util.*
 
-/* =========================================================
-   🧠 STATE MACHINE CORE
-========================================================= */
+class SafeAccessibilityService : AccessibilityService() {
 
-sealed class ServiceState {
-    object Idle : ServiceState()
-    object Observing : ServiceState()
-    object Processing : ServiceState()
-    object Executing : ServiceState()
-    data class Error(val message: String) : ServiceState()
-}
+    private val mainHandler = Handler(Looper.getMainLooper())
 
-/* =========================================================
-   🧩 SAFE NODE CACHE (ANTI RE-SCAN OPTIMIZATION)
-========================================================= */
+    // ---------------- STATE ----------------
+    private var step = 0
+    private var running = false
+    private var lastActionTs = 0L
 
-class NodeCache {
-    private val cache = ConcurrentHashMap<String, AccessibilityNodeInfo>()
+    // ---------------- WATCHDOG ----------------
+    private val watchdog = object : Runnable {
+        override fun run() {
+            val now = System.currentTimeMillis()
 
-    fun put(key: String, node: AccessibilityNodeInfo) {
-        cache[key] = node
+            if (running && now - lastActionTs > 8000) {
+                reset("Auto Recovery Triggered")
+            }
+
+            mainHandler.postDelayed(this, 2000)
+        }
     }
 
-    fun get(key: String): AccessibilityNodeInfo? {
-        return cache[key]
+    override fun onServiceConnected() {
+        super.onServiceConnected()
+        running = true
+        mainHandler.post(watchdog)
     }
 
-    fun clear() {
-        cache.clear()
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        val root = rootInActiveWindow ?: return
+
+        if (!isValidEvent(event)) return
+
+        when (step) {
+            0 -> observe(root)
+            1 -> process(root)
+        }
     }
-}
 
-/* =========================================================
-   🧭 ITERATIVE TREE TRAVERSAL ENGINE
-========================================================= */
+    // ---------------- SAFE OBSERVE ----------------
+    private fun observe(root: AccessibilityNodeInfo) {
+        val node = findNode(root, "Refresh") ?: return
+        safeClick(node)
+        step = 1
+    }
 
-class TraversalEngine {
+    // ---------------- SAFE PROCESS ----------------
+    private fun process(root: AccessibilityNodeInfo) {
+        val node = findNode(root, "OK") ?: return
+        safeClick(node)
+    }
 
-    fun findNodeByTextIterative(
-        root: AccessibilityNodeInfo?,
-        targetText: String
-    ): AccessibilityNodeInfo? {
-
-        if (root == null) return null
-
+    // ---------------- SAFE NODE SEARCH (ITERATIVE) ----------------
+    private fun findNode(root: AccessibilityNodeInfo, keyword: String): AccessibilityNodeInfo? {
         val stack = ArrayDeque<AccessibilityNodeInfo>()
         stack.add(root)
 
         while (stack.isNotEmpty()) {
+            val n = stack.removeLast()
 
-            val node = stack.removeLast() ?: continue
+            val text = n.text?.toString() ?: ""
+            val desc = n.contentDescription?.toString() ?: ""
 
-            val text = node.text?.toString() ?: ""
-            val desc = node.contentDescription?.toString() ?: ""
-
-            if (text.contains(targetText, true) ||
-                desc.contains(targetText, true)
-            ) {
-                return node
+            if (text.contains(keyword, true) || desc.contains(keyword, true)) {
+                return n
             }
 
-            for (i in 0 until node.childCount) {
-                val child = node.getChild(i)
-                if (child != null) stack.add(child)
+            for (i in 0 until n.childCount) {
+                n.getChild(i)?.let { stack.add(it) }
             }
         }
-
         return null
     }
 
-    fun collectClickables(root: AccessibilityNodeInfo?): List<AccessibilityNodeInfo> {
-        if (root == null) return emptyList()
-
-        val result = mutableListOf<AccessibilityNodeInfo>()
-        val stack = ArrayDeque<AccessibilityNodeInfo>()
-        stack.add(root)
-
-        while (stack.isNotEmpty()) {
-            val node = stack.removeLast()
-
-            if (node.isClickable && node.isVisibleToUser) {
-                result.add(node)
-            }
-
-            for (i in 0 until node.childCount) {
-                node.getChild(i)?.let { stack.add(it) }
-            }
-        }
-
-        return result
-    }
-}
-
-/* =========================================================
-   ⚖️ DECISION ENGINE (DETERMINISTIC POLICY)
-========================================================= */
-
-class DecisionEngine {
-
-    fun pickBest(nodes: List<AccessibilityNodeInfo>): AccessibilityNodeInfo? {
-        return nodes.firstOrNull { it.isEnabled && it.isClickable }
-    }
-}
-
-/* =========================================================
-   🛡️ SAFETY LAYER (ANTI CRASH + ANTI LOOP)
-========================================================= */
-
-class SafetyLayer {
-    private val lastActionMap = ConcurrentHashMap<String, Long>()
-    private val cooldown = 1200L
-
-    fun allow(key: String): Boolean {
+    // ---------------- SAFE CLICK ----------------
+    private fun safeClick(node: AccessibilityNodeInfo) {
         val now = System.currentTimeMillis()
-        val last = lastActionMap[key] ?: 0L
-
-        if (now - last < cooldown) return false
-
-        lastActionMap[key] = now
-        return true
-    }
-}
-
-/* =========================================================
-   🚀 ORCHESTRATOR SERVICE (PRODUCTION SAFE SKELETON)
-========================================================= */
-
-class AARESafeService : AccessibilityService() {
-
-    private var state: ServiceState = ServiceState.Idle
-
-    private val handler = Handler(Looper.getMainLooper())
-
-    private val traversalEngine = TraversalEngine()
-    private val decisionEngine = DecisionEngine()
-    private val safetyLayer = SafetyLayer()
-    private val cache = NodeCache()
-
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-
-        val root = rootInActiveWindow ?: return
-
-        state = ServiceState.Observing
+        if (now - lastActionTs < 500) return
 
         try {
+            node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            lastActionTs = now
+        } catch (_: Exception) {}
+    }
 
-            state = ServiceState.Processing
+    // ---------------- EVENT FILTER ----------------
+    private fun isValidEvent(event: AccessibilityEvent?): Boolean {
+        return event?.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED ||
+                event?.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
+    }
 
-            val cachedKey = root.hashCode().toString()
-
-            val cached = cache.get(cachedKey)
-            val clickables = if (cached != null) {
-                listOf(cached)
-            } else {
-                val nodes = traversalEngine.collectClickables(root)
-                nodes.forEach { cache.put(it.hashCode().toString(), it) }
-                nodes
-            }
-
-            val target = decisionEngine.pickBest(clickables) ?: return
-
-            val actionKey = target.text?.toString() ?: target.className?.toString() ?: "unknown"
-
-            if (!safetyLayer.allow(actionKey)) return
-
-            state = ServiceState.Executing
-
-            handler.post {
-                try {
-                    target.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    state = ServiceState.Idle
-                } catch (e: Exception) {
-                    state = ServiceState.Error(e.message ?: "unknown")
-                }
-            }
-
-        } catch (e: Exception) {
-            state = ServiceState.Error(e.message ?: "fatal")
-        }
+    // ---------------- RESET ----------------
+    private fun reset(msg: String) {
+        step = 0
+        running = false
+        lastActionTs = 0L
     }
 
     override fun onInterrupt() {
-        state = ServiceState.Idle
-        cache.clear()
+        reset("Interrupted")
     }
 
     override fun onDestroy() {
-        handler.removeCallbacksAndMessages(null)
-        cache.clear()
+        mainHandler.removeCallbacksAndMessages(null)
         super.onDestroy()
     }
 }
